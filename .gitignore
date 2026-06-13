@@ -1,0 +1,21 @@
+# Agent instructions
+AGENTS.md
+
+# User data / privacy
+.deleted/
+games.json
+config.ini
+
+# Build artifacts
+*.exe
+*.spec
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+
+# Game assets (user private content)
+冒险解谜/
+动作游戏/
+角色扮演/
