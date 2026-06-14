@@ -1732,7 +1732,6 @@ class CGThumb(QWidget):
 class CGDisplayWidget(QWidget):
     """详情页中间 CG 大图展示，支持拖拽/滚轮翻页、点击全屏、关闭"""
     viewer_requested = pyqtSignal(int)
-    closed = pyqtSignal()
     page_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
@@ -1787,9 +1786,9 @@ class CGDisplayWidget(QWidget):
         if self._image_visible and self._pixmap and not self._pixmap.isNull():
             pw = self._pixmap.width()
             ph = self._pixmap.height()
-            # 默认铺满中间区域 98%，让 CG 尽可能大
-            max_w = self.width() * 0.98
-            max_h = self.height() * 0.98
+            # 默认铺满整个中间区域
+            max_w = self.width()
+            max_h = self.height()
             scaled = self._pixmap.scaled(
                 int(max_w), int(max_h),
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -1873,10 +1872,11 @@ class CGDisplayWidget(QWidget):
 
     def hide_image(self):
         """关闭中间 CG 大图显示，但 widget 仍占据布局位置"""
+        if not self._image_visible:
+            return
         self._image_visible = False
         self._close_btn.hide()
         self.update()
-        self.closed.emit()
 
     def show_image(self):
         """重新显示中间 CG 大图"""
@@ -2357,7 +2357,6 @@ class DetailPage(QWidget):
 
         self.cg_display = CGDisplayWidget(self.content)
         self.cg_display.viewer_requested.connect(self._open_cg_viewer_by_index)
-        self.cg_display.closed.connect(self._hide_cg_display)
         self.cg_display.page_changed.connect(self._on_cg_display_page_changed)
         content_layout.addWidget(self.cg_display, stretch=1)
 
