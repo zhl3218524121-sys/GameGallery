@@ -1727,6 +1727,137 @@ class CGThumb(QWidget):
 
 
 # ============================================================================
+# 中间 CG 大图展示
+# ============================================================================
+class CGDisplayWidget(QWidget):
+    """详情页中间 CG 大图展示，支持拖拽/滚轮翻页、点击全屏、关闭"""
+    viewer_requested = pyqtSignal(int)
+    closed = pyqtSignal()
+    page_changed = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setStyleSheet("background: transparent;")
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+        self._pixmap: Optional[QPixmap] = None
+        self._current_index = 0
+        self._cg_files: List[Path] = []
+        self._drag_start = QPoint()
+        self._is_dragging = False
+
+        self._close_btn = QPushButton("×", self)
+        self._close_btn.setFixedSize(36, 36)
+        self._close_btn.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
+        self._close_btn.setStyleSheet(
+            "QPushButton { background: rgba(0,0,0,0.5); color: white; "
+            "border: 1px solid rgba(255,255,255,0.3); border-radius: 18px; }"
+            "QPushButton:hover { background: rgba(255,50,50,0.8); }"
+        )
+        self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_btn.clicked.connect(self.closed.emit)
+        self._close_btn.hide()
+
+    def set_cg_files(self, cg_files: List[Path], index: int = 0):
+        self._cg_files = cg_files
+        self._current_index = max(0, min(index, len(cg_files) - 1)) if cg_files else 0
+        self._load_current()
+
+    def _load_current(self):
+        if not self._cg_files or self._current_index < 0 or self._current_index >= len(self._cg_files):
+            self._pixmap = None
+            self.update()
+            return
+        path = str(self._cg_files[self._current_index])
+        _image_loader.load_once(path, QSize(), self._on_loaded)
+
+    def _on_loaded(self, path: str, pixmap: QPixmap):
+        if self._cg_files and self._current_index < len(self._cg_files) and str(self._cg_files[self._current_index]) == path:
+            self._pixmap = pixmap
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        if self._pixmap and not self._pixmap.isNull():
+            pw = self._pixmap.width()
+            ph = self._pixmap.height()
+            max_w = self.width() * 0.92
+            max_h = self.height() * 0.92
+            scaled = self._pixmap.scaled(
+                int(max_w), int(max_h),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            sx = (self.width() - scaled.width()) // 2
+            sy = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(sx, sy, scaled)
+
+            # 绘制 subtle 阴影边框
+            rect = QRect(sx, sy, scaled.width(), scaled.height())
+            pen = QPen(QColor(255, 255, 255, 60))
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawRect(rect)
+
+            self._close_btn.move(self.width() - 46, 10)
+            self._close_btn.show()
+        else:
+            self._close_btn.hide()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.pos()
+            self._is_dragging = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.MouseButton.LeftButton:
+            if (event.pos() - self._drag_start).manhattanLength() > QApplication.startDragDistance():
+                self._is_dragging = True
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self._is_dragging:
+                self.viewer_requested.emit(self._current_index)
+            self._is_dragging = False
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta < 0:
+            self.next()
+        elif delta > 0:
+            self.prev()
+        event.accept()
+
+    def next(self):
+        if self._cg_files and self._current_index < len(self._cg_files) - 1:
+            self._current_index += 1
+            self._load_current()
+            self.page_changed.emit(self._current_index)
+
+    def prev(self):
+        if self._cg_files and self._current_index > 0:
+            self._current_index -= 1
+            self._load_current()
+            self.page_changed.emit(self._current_index)
+
+    def show_index(self, index: int):
+        if self._cg_files:
+            self._current_index = max(0, min(index, len(self._cg_files) - 1))
+            self._load_current()
+
+    def current_index(self) -> int:
+        return self._current_index
+
+
+# ============================================================================
 # 横向滚动行
 # ============================================================================
 class GameRow(QWidget):
@@ -1936,9 +2067,12 @@ class DetailPage(QWidget):
         self.bg_label.setGraphicsEffect(self.blur_effect)
 
         self.overlay = QWidget(self)
-        # 统一暗色遮罩，让两侧半透明面板与壁纸融合
+        # 两侧暗色遮罩，中间透明，让 CG 大图/壁纸清晰可见
         self.overlay.setStyleSheet(
-            f"background: {ThemeManager().current().bg}B3;"
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 rgba(0,0,0,0.85), stop:0.18 rgba(0,0,0,0.55),"
+            "stop:0.35 rgba(0,0,0,0.0), stop:0.65 rgba(0,0,0,0.0),"
+            "stop:0.82 rgba(0,0,0,0.55), stop:1 rgba(0,0,0,0.85));"
         )
 
         self.content = QWidget(self)
@@ -1951,12 +2085,12 @@ class DetailPage(QWidget):
         # 磨砂玻璃半透明背景效果
         self.info_widget.setStyleSheet(
             f"QWidget {{"
-            f"  background: {ThemeManager().current().bg_light}C0;"
+            f"  background: {ThemeManager().current().bg_light}80;"
             f"  border: 1px solid {ThemeManager().current().border};"
             "  border-radius: 16px;"
             "}"
             "QLabel, QPushButton, QWidget { background: transparent; }"
-            "QTextEdit { background: rgba(255,255,255,0.05); color: white; }"
+            "QTextEdit { background: rgba(255,255,255,0.08); color: white; }"
         )
         info_layout = QVBoxLayout(self.info_widget)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -2187,14 +2321,19 @@ class DetailPage(QWidget):
 
         content_layout.addWidget(self.info_widget)
         self.info_widget.setFixedWidth(360)
-        content_layout.addStretch(stretch=1)
+
+        self.cg_display = CGDisplayWidget(self.content)
+        self.cg_display.viewer_requested.connect(self._open_cg_viewer_by_index)
+        self.cg_display.closed.connect(self._hide_cg_display)
+        self.cg_display.page_changed.connect(self._on_cg_display_page_changed)
+        content_layout.addWidget(self.cg_display, stretch=1)
 
         self.cg_panel = QFrame(self.content)
         self.cg_panel.setFixedWidth(CG_PANEL_W)
         # 磨砂玻璃半透明背景效果
         self.cg_panel.setStyleSheet(
             f"QFrame {{"
-            f"  background: {ThemeManager().current().bg_light}C0;"
+            f"  background: {ThemeManager().current().bg_light}80;"
             f"  border: 1px solid {ThemeManager().current().border};"
             "  border-radius: 16px;"
             "}"
@@ -2266,6 +2405,10 @@ class DetailPage(QWidget):
         self.launch_btn.setVisible(True)
         self.set_exe_btn.setVisible(True)
 
+        # 设置中间 CG 大图
+        self.cg_display.set_cg_files(game.cg_files)
+        self.cg_display.show()
+
         while self.cg_grid.count():
             item = self.cg_grid.takeAt(0)
             if item.widget():
@@ -2275,7 +2418,7 @@ class DetailPage(QWidget):
             cols = 3
             for i, cg_path in enumerate(game.cg_files):
                 thumb = CGThumb(cg_path, game.name, self.cg_container)
-                thumb.clicked.connect(self._open_cg_viewer)
+                thumb.clicked.connect(lambda checked, idx=i, path=cg_path: self._on_cg_thumb_clicked(idx, path))
                 self.cg_grid.addWidget(thumb, i // cols, i % cols)
         else:
             empty = QLabel("暂无 CG", self.cg_container)
@@ -2409,8 +2552,27 @@ class DetailPage(QWidget):
             if str(cg_path) == path:
                 current_index = i
                 break
-        viewer = CGViewerDialog(self.game.cg_files, current_index, game_name, self)
+        self._open_cg_viewer_by_index(current_index)
+
+    def _open_cg_viewer_by_index(self, index: int):
+        if not self.game or not self.game.cg_files:
+            return
+        index = max(0, min(index, len(self.game.cg_files) - 1))
+        viewer = CGViewerDialog(self.game.cg_files, index, self.game.name, self)
         viewer.exec()
+
+    def _on_cg_thumb_clicked(self, index: int, path: Path):
+        """CG 面板缩略图被点击：显示中间大图并切换"""
+        self.cg_display.show()
+        self.cg_display.show_index(index)
+
+    def _hide_cg_display(self):
+        """关闭中间 CG 大图显示"""
+        self.cg_display.hide()
+
+    def _on_cg_display_page_changed(self, index: int):
+        """中间大图翻页时同步更新 CG 数量显示（可选扩展）"""
+        pass
 
     def _add_detail_image(self, img_type: str):
         """在详情页添加封面/壁纸，支持裁剪调整"""
@@ -2500,19 +2662,24 @@ class DetailPage(QWidget):
         """主题切换时更新详情页颜色"""
         t = ThemeManager().current()
         self.bg_label.setStyleSheet(f"background-color: {t.bg};")
-        self.overlay.setStyleSheet(f"background: {t.bg}B3;")
+        self.overlay.setStyleSheet(
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 rgba(0,0,0,0.85), stop:0.18 rgba(0,0,0,0.55),"
+            "stop:0.35 rgba(0,0,0,0.0), stop:0.65 rgba(0,0,0,0.0),"
+            "stop:0.82 rgba(0,0,0,0.55), stop:1 rgba(0,0,0,0.85));"
+        )
         self.info_widget.setStyleSheet(
             f"QWidget {{"
-            f"  background: {t.bg_light}C0;"
+            f"  background: {t.bg_light}80;"
             f"  border: 1px solid {t.border};"
             "  border-radius: 16px;"
             "}"
             "QLabel, QPushButton, QWidget { background: transparent; }"
-            "QTextEdit { background: rgba(255,255,255,0.05); color: white; }"
+            "QTextEdit { background: rgba(255,255,255,0.08); color: white; }"
         )
         self.cg_panel.setStyleSheet(
             f"QFrame {{"
-            f"  background: {t.bg_light}C0;"
+            f"  background: {t.bg_light}80;"
             f"  border: 1px solid {t.border};"
             "  border-radius: 16px;"
             "}"
@@ -2520,6 +2687,11 @@ class DetailPage(QWidget):
         )
         self.cat_label.setStyleSheet(f"color: {t.text_dim};")
         self.cg_count_label.setStyleSheet(f"color: {t.accent_glow};")
+        self.cg_display._close_btn.setStyleSheet(
+            "QPushButton { background: rgba(0,0,0,0.5); color: white; "
+            "border: 1px solid rgba(255,255,255,0.3); border-radius: 18px; }"
+            "QPushButton:hover { background: rgba(255,50,50,0.8); }"
+        )
 
 
 # ============================================================================
@@ -3669,6 +3841,13 @@ class MainWindow(QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape and self.stack.currentIndex() == 1:
             self._show_gallery()
+        elif self.stack.currentIndex() == 1:
+            if event.key() == Qt.Key.Key_Left:
+                self.detail_page.cg_display.prev()
+            elif event.key() == Qt.Key.Key_Right:
+                self.detail_page.cg_display.next()
+            else:
+                super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
 
