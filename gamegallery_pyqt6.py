@@ -887,10 +887,15 @@ class CGViewerDialog(QDialog):
         self.current_index = current_index
         self.game_name = game_name
         self.setWindowTitle(f"CG 鉴赏 - {game_name}")
-        self.setMinimumSize(800, 600)
-        self.showMaximized()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setStyleSheet("background-color: #0a0a0a;")
+
+        # 默认居中显示，大小为屏幕 80%
+        screen = QApplication.primaryScreen().geometry()
+        w = int(screen.width() * 0.8)
+        h = int(screen.height() * 0.8)
+        self.resize(w, h)
+        self.move(screen.center() - self.rect().center())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1639,40 +1644,6 @@ class GameCard(QWidget):
 # ============================================================================
 # CG 缩略图
 # ============================================================================
-class CGHoverViewer(QWidget):
-    """CG 悬停放大预览窗口"""
-    def __init__(self, path: str, parent=None):
-        super().__init__(
-            parent,
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.path = path
-        self.pixmap = QPixmap(path)
-        if self.pixmap.isNull():
-            self.close()
-            return
-
-        screen = QApplication.primaryScreen().geometry()
-        max_w = int(screen.width() * 0.55)
-        max_h = int(screen.height() * 0.65)
-        scaled = self.pixmap.scaled(
-            max_w, max_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.setFixedSize(scaled.size())
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        label = QLabel(self)
-        label.setPixmap(scaled)
-        label.setFixedSize(scaled.size())
-        layout.addWidget(label)
-
-
 class CGThumb(QWidget):
     clicked = pyqtSignal(str, str)
 
@@ -1684,10 +1655,6 @@ class CGThumb(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.pixmap: Optional[QPixmap] = None
         self._hover = False
-        self._hover_timer = QTimer(self)
-        self._hover_timer.setSingleShot(True)
-        self._hover_timer.timeout.connect(self._show_hover_preview)
-        self._hover_viewer: Optional[CGHoverViewer] = None
 
         # 加载原始图片，在 paintEvent 中按需高质量缩放，避免二次模糊
         _image_loader.load_once(self.path, QSize(), self._on_loaded)
@@ -1705,36 +1672,12 @@ class CGThumb(QWidget):
     def enterEvent(self, event):
         self._hover = True
         self.update()
-        self._hover_timer.start(300)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._hover = False
         self.update()
-        self._hover_timer.stop()
-        if self._hover_viewer:
-            self._hover_viewer.close()
-            self._hover_viewer = None
         super().leaveEvent(event)
-
-    def _show_hover_preview(self):
-        if not self._hover:
-            return
-        self._hover_viewer = CGHoverViewer(self.path, self)
-        # 默认显示在 CG 面板左侧
-        pos = self.mapToGlobal(QPoint(-self._hover_viewer.width() - 20, 0))
-        screen = QApplication.primaryScreen().geometry()
-        # 如果超出左边界，改到右侧
-        if pos.x() < screen.left() + 10:
-            pos = self.mapToGlobal(QPoint(self.width() + 20, 0))
-        # 防止超出下边界
-        if pos.y() + self._hover_viewer.height() > screen.bottom() - 10:
-            pos.setY(screen.bottom() - self._hover_viewer.height() - 10)
-        # 防止超出上边界
-        if pos.y() < screen.top() + 10:
-            pos.setY(screen.top() + 10)
-        self._hover_viewer.move(pos)
-        self._hover_viewer.show()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1993,28 +1936,27 @@ class DetailPage(QWidget):
         self.bg_label.setGraphicsEffect(self.blur_effect)
 
         self.overlay = QWidget(self)
-        # 左右两侧有暗色遮罩，中间区域透明，让壁纸清晰可见
+        # 统一暗色遮罩，让两侧半透明面板与壁纸融合
         self.overlay.setStyleSheet(
-            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            "stop:0 rgba(14,20,27,0.85), stop:0.25 rgba(14,20,27,0.6),"
-            "stop:0.4 rgba(14,20,27,0.0), stop:0.6 rgba(14,20,27,0.0),"
-            "stop:0.75 rgba(14,20,27,0.6), stop:1 rgba(14,20,27,0.85));"
+            f"background: {ThemeManager().current().bg}B3;"
         )
 
         self.content = QWidget(self)
         self.content.setStyleSheet("background: transparent;")
         content_layout = QHBoxLayout(self.content)
-        content_layout.setContentsMargins(40, 60, 40, 60)
-        content_layout.setSpacing(0)
+        content_layout.setContentsMargins(30, 50, 30, 50)
+        content_layout.setSpacing(20)
 
         self.info_widget = QWidget(self.content)
-        # 毛玻璃半透明背景效果
+        # 磨砂玻璃半透明背景效果
         self.info_widget.setStyleSheet(
-            "QWidget {"
-            "  background: rgba(20, 28, 40, 0.75);"
-            "  border: 1px solid rgba(255,255,255,0.1);"
-            "  border-radius: 12px;"
+            f"QWidget {{"
+            f"  background: {ThemeManager().current().bg_light}C0;"
+            f"  border: 1px solid {ThemeManager().current().border};"
+            "  border-radius: 16px;"
             "}"
+            "QLabel, QPushButton, QWidget { background: transparent; }"
+            "QTextEdit { background: rgba(255,255,255,0.05); color: white; }"
         )
         info_layout = QVBoxLayout(self.info_widget)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -2244,21 +2186,19 @@ class DetailPage(QWidget):
         info_layout.addWidget(self.back_btn)
 
         content_layout.addWidget(self.info_widget)
-        self.info_widget.setFixedWidth(380)
+        self.info_widget.setFixedWidth(360)
         content_layout.addStretch(stretch=1)
 
-        self.trigger_zone = QWidget(self)
-        self.trigger_zone.setFixedWidth(60)
-        self.trigger_zone.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.trigger_zone.setStyleSheet("background: rgba(255,255,255,0.02);")
-
-        self.cg_panel = QFrame(self)
+        self.cg_panel = QFrame(self.content)
         self.cg_panel.setFixedWidth(CG_PANEL_W)
+        # 磨砂玻璃半透明背景效果
         self.cg_panel.setStyleSheet(
             f"QFrame {{"
-            f"  background: {ThemeManager().current().panel_bg};"
-            f"  border-left: 1px solid {ThemeManager().current().border};"
-            f"}}"
+            f"  background: {ThemeManager().current().bg_light}C0;"
+            f"  border: 1px solid {ThemeManager().current().border};"
+            "  border-radius: 16px;"
+            "}"
+            "QLabel { background: transparent; }"
         )
         cg_layout = QVBoxLayout(self.cg_panel)
         cg_layout.setContentsMargins(20, 20, 20, 20)
@@ -2267,9 +2207,10 @@ class DetailPage(QWidget):
         cg_title = QLabel("CG 鉴赏", self.cg_panel)
         cg_title.setFont(QFont("Microsoft YaHei", 18, QFont.Weight.Bold))
         cg_title.setStyleSheet(
-            "color: white;"
-            "border-bottom: 1px solid rgba(255,255,255,0.1);"
+            f"color: {ThemeManager().current().text};"
+            f"border-bottom: 1px solid {ThemeManager().current().border};"
             "padding-bottom: 10px;"
+            "background: transparent;"
         )
         cg_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cg_layout.addWidget(cg_title)
@@ -2289,17 +2230,7 @@ class DetailPage(QWidget):
         self.cg_scroll.setWidget(self.cg_container)
         cg_layout.addWidget(self.cg_scroll)
 
-        self.cg_panel.hide()
-        self.cg_panel_visible = False
-        self.cg_panel_x = 0.0
-
-        self._panel_anim = QVariantAnimation(self)
-        self._panel_anim.setDuration(350)
-        self._panel_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._panel_anim.valueChanged.connect(self._on_panel_anim)
-
-        self.trigger_zone.installEventFilter(self)
-        self.cg_panel.installEventFilter(self)
+        content_layout.addWidget(self.cg_panel)
 
     def set_game(self, game: GameInfo):
         self.game = game
@@ -2313,9 +2244,6 @@ class DetailPage(QWidget):
             self._load_bg(str(game.wallpaper))
         elif game.cover and game.cover.exists():
             self._load_bg(str(game.cover))
-
-        # 默认显示CG面板
-        QTimer.singleShot(100, self._show_cg_panel)
 
         self.name_label.setText(game.name)
         self.cat_label.setText(f"分类: {game.category} / {game.sub}")
@@ -2352,13 +2280,8 @@ class DetailPage(QWidget):
         else:
             empty = QLabel("暂无 CG", self.cg_container)
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setStyleSheet(f"color: {ThemeManager().current().text_dim}; font-size: 14px; padding: 40px;")
+            empty.setStyleSheet(f"color: {ThemeManager().current().text_dim}; font-size: 14px; padding: 40px; background: transparent;")
             self.cg_grid.addWidget(empty, 0, 0, 1, 3)
-
-        self.cg_panel.hide()
-        self.cg_panel_visible = False
-        self.cg_panel_x = 0.0
-        self._update_panel_pos()
 
     def _update_fav_btn(self):
         if self.game and self.game.favorite:
@@ -2551,64 +2474,11 @@ class DetailPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存失败: {e}")
 
-    def eventFilter(self, obj, event):
-        if obj == self.trigger_zone:
-            if event.type() == QEvent.Type.Enter:
-                self._show_cg_panel()
-            return True
-        elif obj == self.cg_panel:
-            if event.type() == QEvent.Type.Leave:
-                pos = self.mapFromGlobal(QCursor.pos())
-                if not self.cg_panel.geometry().contains(pos) and not self.trigger_zone.geometry().contains(pos):
-                    self._hide_cg_panel()
-            return False
-        return super().eventFilter(obj, event)
-
-    def _show_cg_panel(self):
-        if self.cg_panel_visible:
-            return
-        self.cg_panel_visible = True
-        self.cg_panel.show()
-        self.cg_panel.raise_()
-
-        self._panel_anim.stop()
-        self._panel_anim.setStartValue(0.0)
-        self._panel_anim.setEndValue(1.0)
-        self._panel_anim.start()
-
-    def _hide_cg_panel(self):
-        if not self.cg_panel_visible:
-            return
-        self.cg_panel_visible = False
-
-        self._panel_anim.stop()
-        self._panel_anim.setStartValue(self._panel_anim.currentValue() if self._panel_anim.currentValue() is not None else 1.0)
-        self._panel_anim.setEndValue(0.0)
-        self._panel_anim.start()
-
-    def _on_panel_anim(self, value: float):
-        self.cg_panel_x = value
-        self._update_panel_pos()
-
-    def _update_panel_pos(self):
-        if not self.isVisible():
-            return
-        panel_w = CG_PANEL_W
-        start_x = self.width()
-        end_x = self.width() - panel_w
-        current_x = int(start_x + (end_x - start_x) * self.cg_panel_x)
-        self.cg_panel.setGeometry(current_x, 0, panel_w, self.height())
-
-        if self.cg_panel_x <= 0.01 and not self.cg_panel_visible:
-            self.cg_panel.hide()
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.bg_label.setGeometry(self.rect())
         self.overlay.setGeometry(self.rect())
         self.content.setGeometry(self.rect())
-        self.trigger_zone.setGeometry(self.width()-60, 0, 60, self.height())
-        self._update_panel_pos()
         self._apply_bg_scale()
 
     def _apply_bg_scale(self):
@@ -2625,6 +2495,31 @@ class DetailPage(QWidget):
         )
         self.bg_label.setPixmap(scaled)
         self.bg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    def _apply_theme(self):
+        """主题切换时更新详情页颜色"""
+        t = ThemeManager().current()
+        self.bg_label.setStyleSheet(f"background-color: {t.bg};")
+        self.overlay.setStyleSheet(f"background: {t.bg}B3;")
+        self.info_widget.setStyleSheet(
+            f"QWidget {{"
+            f"  background: {t.bg_light}C0;"
+            f"  border: 1px solid {t.border};"
+            "  border-radius: 16px;"
+            "}"
+            "QLabel, QPushButton, QWidget { background: transparent; }"
+            "QTextEdit { background: rgba(255,255,255,0.05); color: white; }"
+        )
+        self.cg_panel.setStyleSheet(
+            f"QFrame {{"
+            f"  background: {t.bg_light}C0;"
+            f"  border: 1px solid {t.border};"
+            "  border-radius: 16px;"
+            "}"
+            "QLabel { background: transparent; }"
+        )
+        self.cat_label.setStyleSheet(f"color: {t.text_dim};")
+        self.cg_count_label.setStyleSheet(f"color: {t.accent_glow};")
 
 
 # ============================================================================
@@ -3302,6 +3197,7 @@ class MainWindow(QMainWindow):
         self.recent_added_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         self.time_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         self.status_label.setStyleSheet(f"color: {ThemeManager().current().text_dim}80;")
+        self.detail_page._apply_theme()
         # 重新加载以刷新 paintEvent
         self._refresh()
         QMessageBox.information(self, "主题", f"已切换到主题：{name}")
