@@ -1747,6 +1747,7 @@ class CGDisplayWidget(QWidget):
         self._cg_files: List[Path] = []
         self._drag_start = QPoint()
         self._is_dragging = False
+        self._image_visible = True
 
         self._close_btn = QPushButton("×", self)
         self._close_btn.setFixedSize(36, 36)
@@ -1757,7 +1758,7 @@ class CGDisplayWidget(QWidget):
             "QPushButton:hover { background: rgba(255,50,50,0.8); }"
         )
         self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._close_btn.clicked.connect(self.closed.emit)
+        self._close_btn.clicked.connect(self.hide_image)
         self._close_btn.hide()
 
     def set_cg_files(self, cg_files: List[Path], index: int = 0):
@@ -1783,11 +1784,12 @@ class CGDisplayWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-        if self._pixmap and not self._pixmap.isNull():
+        if self._image_visible and self._pixmap and not self._pixmap.isNull():
             pw = self._pixmap.width()
             ph = self._pixmap.height()
-            max_w = self.width() * 0.92
-            max_h = self.height() * 0.92
+            # 默认铺满中间区域 98%，让 CG 尽可能大
+            max_w = self.width() * 0.98
+            max_h = self.height() * 0.98
             scaled = self._pixmap.scaled(
                 int(max_w), int(max_h),
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -1810,18 +1812,27 @@ class CGDisplayWidget(QWidget):
             self._close_btn.hide()
 
     def mousePressEvent(self, event):
+        if not self._image_visible:
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.pos()
             self._is_dragging = False
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if not self._image_visible:
+            super().mouseMoveEvent(event)
+            return
         if event.buttons() == Qt.MouseButton.LeftButton:
             if (event.pos() - self._drag_start).manhattanLength() > QApplication.startDragDistance():
                 self._is_dragging = True
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if not self._image_visible:
+            super().mouseReleaseEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             if not self._is_dragging:
                 self.viewer_requested.emit(self._current_index)
@@ -1829,6 +1840,9 @@ class CGDisplayWidget(QWidget):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
+        if not self._image_visible:
+            event.ignore()
+            return
         delta = event.angleDelta().y()
         if delta < 0:
             self.next()
@@ -1837,12 +1851,16 @@ class CGDisplayWidget(QWidget):
         event.accept()
 
     def next(self):
+        if not self._image_visible:
+            return
         if self._cg_files and self._current_index < len(self._cg_files) - 1:
             self._current_index += 1
             self._load_current()
             self.page_changed.emit(self._current_index)
 
     def prev(self):
+        if not self._image_visible:
+            return
         if self._cg_files and self._current_index > 0:
             self._current_index -= 1
             self._load_current()
@@ -1852,6 +1870,19 @@ class CGDisplayWidget(QWidget):
         if self._cg_files:
             self._current_index = max(0, min(index, len(self._cg_files) - 1))
             self._load_current()
+
+    def hide_image(self):
+        """关闭中间 CG 大图显示，但 widget 仍占据布局位置"""
+        self._image_visible = False
+        self._close_btn.hide()
+        self.update()
+        self.closed.emit()
+
+    def show_image(self):
+        """重新显示中间 CG 大图"""
+        self._image_visible = True
+        self._load_current()
+        self.update()
 
     def current_index(self) -> int:
         return self._current_index
@@ -2099,11 +2130,13 @@ class DetailPage(QWidget):
 
         self.name_label = QLabel(self.info_widget)
         self.name_label.setFont(QFont("Microsoft YaHei", 38, QFont.Weight.Bold))
+        self.name_label.setStyleSheet("color: white;")
         # 文字阴影效果，确保在任何背景上可读
-        self.name_label.setStyleSheet(
-            "color: white;"
-            "text-shadow: 0 2px 8px rgba(0,0,0,0.8);"
-        )
+        name_shadow = QGraphicsDropShadowEffect(self.name_label)
+        name_shadow.setBlurRadius(16)
+        name_shadow.setColor(QColor(0, 0, 0, 200))
+        name_shadow.setOffset(0, 2)
+        self.name_label.setGraphicsEffect(name_shadow)
         self.name_label.setWordWrap(True)
         info_layout.addWidget(self.name_label)
 
@@ -2418,7 +2451,7 @@ class DetailPage(QWidget):
             cols = 3
             for i, cg_path in enumerate(game.cg_files):
                 thumb = CGThumb(cg_path, game.name, self.cg_container)
-                thumb.clicked.connect(lambda checked, idx=i, path=cg_path: self._on_cg_thumb_clicked(idx, path))
+                thumb.clicked.connect(lambda p, g, idx=i: self._on_cg_thumb_clicked(idx))
                 self.cg_grid.addWidget(thumb, i // cols, i % cols)
         else:
             empty = QLabel("暂无 CG", self.cg_container)
@@ -2561,14 +2594,14 @@ class DetailPage(QWidget):
         viewer = CGViewerDialog(self.game.cg_files, index, self.game.name, self)
         viewer.exec()
 
-    def _on_cg_thumb_clicked(self, index: int, path: Path):
+    def _on_cg_thumb_clicked(self, index: int):
         """CG 面板缩略图被点击：显示中间大图并切换"""
-        self.cg_display.show()
+        self.cg_display.show_image()
         self.cg_display.show_index(index)
 
     def _hide_cg_display(self):
-        """关闭中间 CG 大图显示"""
-        self.cg_display.hide()
+        """关闭中间 CG 大图显示，但保留 widget 布局位置"""
+        self.cg_display.hide_image()
 
     def _on_cg_display_page_changed(self, index: int):
         """中间大图翻页时同步更新 CG 数量显示（可选扩展）"""
