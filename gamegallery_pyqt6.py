@@ -1030,11 +1030,12 @@ class CGViewerDialog(QDialog):
     def _fit_to_window(self):
         if hasattr(self, 'original_pixmap') and not self.original_pixmap.isNull():
             avail = self.scroll_area.viewport().size()
+            # 使用 KeepAspectRatioByExpanding 裁剪填充，去掉黑边
             scaled = self.original_pixmap.scaled(avail,
-                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation)
             self.image_label.setPixmap(scaled)
-            self.image_label.setFixedSize(scaled.size())
+            self.image_label.setFixedSize(avail)
 
     def wheelEvent(self, event: QWheelEvent):
         delta_y = event.angleDelta().y()
