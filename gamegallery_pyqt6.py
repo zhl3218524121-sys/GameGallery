@@ -58,12 +58,193 @@ ROOT_PATH = _get_root_path()
 GAMES_JSON = ROOT_PATH / "games.json"
 SUPPORTED_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
 
-COL_BG = QColor("#0e141b")
-COL_BG_LIGHT = QColor("#1a2330")
-COL_ACCENT = QColor("#1a9fff")
-COL_ACCENT_GLOW = QColor("#66c0f4")
-COL_TEXT = QColor("#ffffff")
-COL_TEXT_DIM = QColor("#8a8a8a")
+
+# ============================================================================
+# 主题系统
+# ============================================================================
+@dataclass
+class Theme:
+    """一套主题配色"""
+    name: str
+    bg: str
+    bg_light: str
+    bg_card: str
+    accent: str
+    accent_glow: str
+    text: str
+    text_dim: str
+    border: str
+    border_light: str
+    overlay: str
+    panel_bg: str
+    input_bg: str
+    button_hover: str
+
+
+class ThemeManager:
+    """主题管理器（单例）"""
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._init()
+        return cls._instance
+
+    def _init(self):
+        self._themes = {
+            "深色": Theme(
+                name="深色",
+                bg="#0e141b",
+                bg_light="#1a2330",
+                bg_card="#16202d",
+                accent="#1a9fff",
+                accent_glow="#66c0f4",
+                text="#ffffff",
+                text_dim="#8a8a8a",
+                border="rgba(255,255,255,0.1)",
+                border_light="rgba(255,255,255,0.2)",
+                overlay="rgba(0,0,0,0.6)",
+                panel_bg="rgba(20,28,40,0.96)",
+                input_bg="rgba(255,255,255,0.05)",
+                button_hover="#66c0f4",
+            ),
+            "纯黑": Theme(
+                name="纯黑",
+                bg="#000000",
+                bg_light="#0a0a0a",
+                bg_card="#111111",
+                accent="#00b4ff",
+                accent_glow="#66d9ff",
+                text="#ffffff",
+                text_dim="#666666",
+                border="rgba(255,255,255,0.15)",
+                border_light="rgba(255,255,255,0.25)",
+                overlay="rgba(0,0,0,0.7)",
+                panel_bg="rgba(10,10,10,0.98)",
+                input_bg="rgba(255,255,255,0.05)",
+                button_hover="#66d9ff",
+            ),
+            "暗紫": Theme(
+                name="暗紫",
+                bg="#120a1f",
+                bg_light="#1e1432",
+                bg_card="#251a3d",
+                accent="#b06cff",
+                accent_glow="#d9a8ff",
+                text="#ffffff",
+                text_dim="#9a85b8",
+                border="rgba(255,255,255,0.1)",
+                border_light="rgba(255,255,255,0.2)",
+                overlay="rgba(0,0,0,0.6)",
+                panel_bg="rgba(30,20,50,0.96)",
+                input_bg="rgba(255,255,255,0.05)",
+                button_hover="#d9a8ff",
+            ),
+        }
+        self._current = self._themes["深色"]
+
+    def current(self) -> Theme:
+        return self._current
+
+    def names(self) -> List[str]:
+        return list(self._themes.keys())
+
+    def apply(self, name: str) -> bool:
+        if name not in self._themes:
+            return False
+        self._current = self._themes[name]
+        refresh_theme_colors()
+        return True
+
+
+# 全局颜色常量，会从当前主题刷新
+def refresh_theme_colors():
+    global COL_BG, COL_BG_LIGHT, COL_ACCENT, COL_ACCENT_GLOW, COL_TEXT, COL_TEXT_DIM
+    t = ThemeManager().current()
+    COL_BG = QColor(t.bg)
+    COL_BG_LIGHT = QColor(t.bg_light)
+    COL_ACCENT = QColor(t.accent)
+    COL_ACCENT_GLOW = QColor(t.accent_glow)
+    COL_TEXT = QColor(t.text)
+    COL_TEXT_DIM = QColor(t.text_dim)
+
+
+refresh_theme_colors()
+
+
+def global_stylesheet() -> str:
+    """基于当前主题生成全局样式表"""
+    t = ThemeManager().current()
+    return f"""
+    QMainWindow, QWidget {{
+        background-color: {t.bg};
+        color: {t.text};
+        font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    }}
+    QLabel {{
+        color: {t.text};
+    }}
+    QPushButton {{
+        background: {t.accent};
+        color: {t.text};
+        border: none;
+        border-radius: 4px;
+        padding: 8px 16px;
+    }}
+    QPushButton:hover {{
+        background: {t.button_hover};
+    }}
+    QLineEdit, QTextEdit, QComboBox {{
+        background: {t.input_bg};
+        color: {t.text};
+        border: 1px solid {t.border};
+        border-radius: 4px;
+        padding: 8px 12px;
+    }}
+    QLineEdit:focus, QTextEdit:focus, QComboBox:focus {{
+        border: 1px solid {t.accent};
+    }}
+    QComboBox QAbstractItemView {{
+        background: {t.bg_light};
+        color: {t.text};
+        border: 1px solid {t.border};
+        selection-background-color: {t.accent}50;
+    }}
+    QScrollBar:vertical, QScrollBar:horizontal {{
+        background: transparent;
+        width: 8px;
+        height: 8px;
+    }}
+    QScrollBar::handle {{
+        background: {t.border};
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:hover {{
+        background: {t.border_light};
+    }}
+    QMenu {{
+        background: {t.bg_light};
+        color: {t.text};
+        border: 1px solid {t.border};
+    }}
+    QMenu::item:selected {{
+        background: {t.accent}40;
+    }}
+    QToolTip {{
+        background: {t.bg_light};
+        color: {t.text};
+        border: 1px solid {t.border};
+    }}
+    QDialog {{
+        background-color: {t.bg_light};
+    }}
+    QFrame {{
+        background-color: {t.bg};
+        border: none;
+    }}
+    """
+
 
 CARD_W = 360
 CARD_H = 200
@@ -441,7 +622,7 @@ class ImageCropDialog(QDialog):
         info_layout = QHBoxLayout()
         self.info_label = QLabel(f"原图: {self.original_pixmap.width()}x{self.original_pixmap.height()} | 目标比例: {target_w}:{target_h}")
         self.info_label.setFont(QFont("Microsoft YaHei", 12))
-        self.info_label.setStyleSheet("color: #8a8a8a;")
+        self.info_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         info_layout.addWidget(self.info_label)
         info_layout.addStretch()
 
@@ -453,7 +634,7 @@ class ImageCropDialog(QDialog):
 
         # 图片显示区域
         self.image_widget = QWidget(self)
-        self.image_widget.setStyleSheet("background: #1a2330; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;")
+        self.image_widget.setStyleSheet(f"background: {ThemeManager().current().bg_light}; border: 1px solid {ThemeManager().current().border}; border-radius: 8px;")
         self.image_widget.setMinimumSize(600, 400)
         self.image_widget.setMouseTracking(True)
         self.image_widget.paintEvent = self._paint_image
@@ -491,8 +672,8 @@ class ImageCropDialog(QDialog):
         ok_btn.setFixedSize(120, 36)
         ok_btn.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
         ok_btn.setStyleSheet(
-            "QPushButton { background: #1a9fff; color: white; border: none; border-radius: 4px; }"
-            "QPushButton:hover { background: #66c0f4; }"
+            f"QPushButton {{ background: {ThemeManager().current().accent}; color: {ThemeManager().current().text}; border: none; border-radius: 4px; }}"
+            f"QPushButton:hover {{ background: {ThemeManager().current().button_hover}; }}"
         )
         ok_btn.clicked.connect(self._confirm_crop)
         btn_layout.addWidget(ok_btn)
@@ -738,7 +919,7 @@ class CGViewerDialog(QDialog):
         self.prev_btn.setStyleSheet(
             "QPushButton { background: rgba(255,255,255,0.1); color: white; "
             "border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; }"
-            "QPushButton:hover { background: rgba(26,159,255,0.3); border: 1px solid #1a9fff; }"
+            f"QPushButton:hover {{ background: {ThemeManager().current().accent}30; border: 1px solid {ThemeManager().current().accent}; }}"
             "QPushButton:disabled { background: rgba(255,255,255,0.05); color: #666666; border: 1px solid rgba(255,255,255,0.1); }"
         )
         self.prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1088,7 +1269,7 @@ class GameCard(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("移动到分类")
         dlg.setFixedSize(350, 180)
-        dlg.setStyleSheet("QDialog { background-color: #1a2330; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; }")
+        dlg.setStyleSheet(f"QDialog {{ background-color: {ThemeManager().current().bg_light}; border: 1px solid {ThemeManager().current().border}; border-radius: 8px; }}")
 
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -1102,9 +1283,9 @@ class GameCard(QWidget):
         combo = QComboBox()
         combo.setStyleSheet(
             "QComboBox { background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 8px 12px; font-size: 13px; }"
-            "QComboBox:focus { border: 1px solid #1a9fff; }"
+            f"QComboBox:focus {{ border: 1px solid {ThemeManager().current().accent}; }}"
             "QComboBox::drop-down { border: none; width: 30px; }"
-            "QComboBox QAbstractItemView { background: #1a2330; color: white; border: 1px solid rgba(255,255,255,0.1); selection-background-color: rgba(26,159,255,0.3); }"
+            f"QComboBox QAbstractItemView {{ background: {ThemeManager().current().bg_light}; color: {ThemeManager().current().text}; border: 1px solid {ThemeManager().current().border}; selection-background-color: {ThemeManager().current().accent}50; }}"
         )
         for label, data in items:
             combo.addItem(label, data)
@@ -1119,7 +1300,7 @@ class GameCard(QWidget):
         btn_layout.addWidget(cancel)
         ok = QPushButton("移动")
         ok.setFixedSize(80, 36)
-        ok.setStyleSheet("QPushButton { background: #1a9fff; color: white; border: none; border-radius: 4px; font-size: 13px; } QPushButton:hover { background: #1a9fffdd; }")
+        ok.setStyleSheet(f"QPushButton {{ background: {ThemeManager().current().accent}; color: {ThemeManager().current().text}; border: none; border-radius: 4px; font-size: 13px; }} QPushButton:hover {{ background: {ThemeManager().current().button_hover}; }}")
         ok.clicked.connect(dlg.accept)
         btn_layout.addWidget(ok)
         layout.addLayout(btn_layout)
@@ -1458,6 +1639,40 @@ class GameCard(QWidget):
 # ============================================================================
 # CG 缩略图
 # ============================================================================
+class CGHoverViewer(QWidget):
+    """CG 悬停放大预览窗口"""
+    def __init__(self, path: str, parent=None):
+        super().__init__(
+            parent,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.path = path
+        self.pixmap = QPixmap(path)
+        if self.pixmap.isNull():
+            self.close()
+            return
+
+        screen = QApplication.primaryScreen().geometry()
+        max_w = int(screen.width() * 0.55)
+        max_h = int(screen.height() * 0.65)
+        scaled = self.pixmap.scaled(
+            max_w, max_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.setFixedSize(scaled.size())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(self)
+        label.setPixmap(scaled)
+        label.setFixedSize(scaled.size())
+        layout.addWidget(label)
+
+
 class CGThumb(QWidget):
     clicked = pyqtSignal(str, str)
 
@@ -1469,6 +1684,10 @@ class CGThumb(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.pixmap: Optional[QPixmap] = None
         self._hover = False
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.timeout.connect(self._show_hover_preview)
+        self._hover_viewer: Optional[CGHoverViewer] = None
 
         # 加载原始图片，在 paintEvent 中按需高质量缩放，避免二次模糊
         _image_loader.load_once(self.path, QSize(), self._on_loaded)
@@ -1486,12 +1705,36 @@ class CGThumb(QWidget):
     def enterEvent(self, event):
         self._hover = True
         self.update()
+        self._hover_timer.start(300)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._hover = False
         self.update()
+        self._hover_timer.stop()
+        if self._hover_viewer:
+            self._hover_viewer.close()
+            self._hover_viewer = None
         super().leaveEvent(event)
+
+    def _show_hover_preview(self):
+        if not self._hover:
+            return
+        self._hover_viewer = CGHoverViewer(self.path, self)
+        # 默认显示在 CG 面板左侧
+        pos = self.mapToGlobal(QPoint(-self._hover_viewer.width() - 20, 0))
+        screen = QApplication.primaryScreen().geometry()
+        # 如果超出左边界，改到右侧
+        if pos.x() < screen.left() + 10:
+            pos = self.mapToGlobal(QPoint(self.width() + 20, 0))
+        # 防止超出下边界
+        if pos.y() + self._hover_viewer.height() > screen.bottom() - 10:
+            pos.setY(screen.bottom() - self._hover_viewer.height() - 10)
+        # 防止超出上边界
+        if pos.y() < screen.top() + 10:
+            pos.setY(screen.top() + 10)
+        self._hover_viewer.move(pos)
+        self._hover_viewer.show()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1742,7 +1985,7 @@ class DetailPage(QWidget):
         self.bg_label = QLabel(self)
         # 不启用 setScaledContents，改为手动按比例缩放，避免窗口变化时拉伸变形
         self.bg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.bg_label.setStyleSheet("background-color: #0e141b;")
+        self.bg_label.setStyleSheet(f"background-color: {ThemeManager().current().bg};")
         self._bg_original_pixmap: Optional[QPixmap] = None
 
         self.blur_effect = QGraphicsBlurEffect(self)
@@ -1790,12 +2033,12 @@ class DetailPage(QWidget):
 
         self.cat_label = QLabel(self.info_widget)
         self.cat_label.setFont(QFont("Microsoft YaHei", 13))
-        self.cat_label.setStyleSheet("color: #8a8a8a;")
+        self.cat_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         info_layout.addWidget(self.cat_label)
 
         self.cg_count_label = QLabel(self.info_widget)
         self.cg_count_label.setFont(QFont("Microsoft YaHei", 11))
-        self.cg_count_label.setStyleSheet("color: #66c0f4;")
+        self.cg_count_label.setStyleSheet(f"color: {ThemeManager().current().accent_glow};")
         info_layout.addWidget(self.cg_count_label)
 
         # 收藏 + 启动按钮行
@@ -1828,13 +2071,13 @@ class DetailPage(QWidget):
         self.launch_btn.setStyleSheet(
             "QPushButton {"
             "  background: rgba(26,159,255,0.2);"
-            "  color: #66c0f4;"
+            f"  color: {ThemeManager().current().accent_glow};"
             "  border: 1px solid rgba(26,159,255,0.4);"
             "  border-radius: 4px;"
             "}"
             "QPushButton:hover {"
             "  background: rgba(26,159,255,0.35);"
-            "  border: 1px solid #66c0f4;"
+            f"  border: 1px solid {ThemeManager().current().accent_glow};"
             "}"
             "QPushButton:disabled {"
             "  background: rgba(255,255,255,0.05);"
@@ -1852,7 +2095,7 @@ class DetailPage(QWidget):
         self.set_exe_btn.setStyleSheet(
             "QPushButton {"
             "  background: rgba(255,255,255,0.08);"
-            "  color: #8a8a8a;"
+            f"  color: {ThemeManager().current().text_dim};"
             "  border: 1px solid rgba(255,255,255,0.15);"
             "  border-radius: 4px;"
             "}"
@@ -1876,7 +2119,7 @@ class DetailPage(QWidget):
 
         rating_title = QLabel("评分:", self.rating_widget)
         rating_title.setFont(QFont("Microsoft YaHei", 11))
-        rating_title.setStyleSheet("color: #8a8a8a;")
+        rating_title.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         rating_layout.addWidget(rating_title)
 
         self.star_buttons = []
@@ -1927,7 +2170,7 @@ class DetailPage(QWidget):
         self.save_note_btn.setStyleSheet(
             "QPushButton {"
             "  background: rgba(26,159,255,0.2);"
-            "  color: #66c0f4;"
+            f"  color: {ThemeManager().current().accent_glow};"
             "  border: 1px solid rgba(26,159,255,0.4);"
             "  border-radius: 4px;"
             "}"
@@ -1993,7 +2236,7 @@ class DetailPage(QWidget):
             "}"
             "QPushButton:hover {"
             "  background: rgba(255,255,255,0.2);"
-            "  border: 1px solid #66c0f4;"
+            f"  border: 1px solid {ThemeManager().current().accent_glow};"
             "}"
         )
         self.back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2012,10 +2255,10 @@ class DetailPage(QWidget):
         self.cg_panel = QFrame(self)
         self.cg_panel.setFixedWidth(CG_PANEL_W)
         self.cg_panel.setStyleSheet(
-            "QFrame {"
-            "  background: rgba(20, 28, 40, 0.96);"
-            "  border-left: 1px solid rgba(255,255,255,0.1);"
-            "}"
+            f"QFrame {{"
+            f"  background: {ThemeManager().current().panel_bg};"
+            f"  border-left: 1px solid {ThemeManager().current().border};"
+            f"}}"
         )
         cg_layout = QVBoxLayout(self.cg_panel)
         cg_layout.setContentsMargins(20, 20, 20, 20)
@@ -2109,7 +2352,7 @@ class DetailPage(QWidget):
         else:
             empty = QLabel("暂无 CG", self.cg_container)
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setStyleSheet("color: #8a8a8a; font-size: 14px; padding: 40px;")
+            empty.setStyleSheet(f"color: {ThemeManager().current().text_dim}; font-size: 14px; padding: 40px;")
             self.cg_grid.addWidget(empty, 0, 0, 1, 3)
 
         self.cg_panel.hide()
@@ -2136,7 +2379,7 @@ class DetailPage(QWidget):
             self.fav_btn.setStyleSheet(
                 "QPushButton {"
                 "  background: rgba(255,255,255,0.08);"
-                "  color: #8a8a8a;"
+                f"  color: {ThemeManager().current().text_dim};"
                 "  border: 1px solid rgba(255,255,255,0.15);"
                 "  border-radius: 4px;"
                 "}"
@@ -2405,7 +2648,7 @@ class AddCategoryDialog(QDialog):
 
         big_layout = QHBoxLayout()
         big_label = QLabel("大类名称:")
-        big_label.setStyleSheet("color: #8a8a8a;")
+        big_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         big_layout.addWidget(big_label)
         self.big_edit = QLineEdit()
         self.big_edit.setPlaceholderText("例如: 角色扮演")
@@ -2415,7 +2658,7 @@ class AddCategoryDialog(QDialog):
 
         sub_layout = QHBoxLayout()
         sub_label = QLabel("小类名称:")
-        sub_label.setStyleSheet("color: #8a8a8a;")
+        sub_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         sub_layout.addWidget(sub_label)
         self.sub_edit = QLineEdit()
         self.sub_edit.setPlaceholderText("例如: 日式RPG")
@@ -2456,7 +2699,7 @@ class AddCategoryDialog(QDialog):
 
     def _style(self):
         return (
-            "QDialog { background-color: #1a2330; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; }"
+            f"QDialog {{ background-color: {ThemeManager().current().bg_light}; border: 1px solid {ThemeManager().current().border}; border-radius: 8px; }}"
             "QLabel { font-family: 'Microsoft YaHei'; }"
         )
 
@@ -2509,7 +2752,7 @@ class AddGameDialog(QDialog):
 
         cat_layout = QHBoxLayout()
         cat_label = QLabel("选择分类:")
-        cat_label.setStyleSheet("color: #8a8a8a; font-size: 13px;")
+        cat_label.setStyleSheet(f"color: {ThemeManager().current().text_dim}; font-size: 13px;")
         cat_label.setFont(QFont("Microsoft YaHei", 12))
         cat_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         cat_layout.addWidget(cat_label)
@@ -2521,7 +2764,7 @@ class AddGameDialog(QDialog):
 
         name_layout = QHBoxLayout()
         name_label = QLabel("游戏名称:")
-        name_label.setStyleSheet("color: #8a8a8a; font-size: 13px;")
+        name_label.setStyleSheet(f"color: {ThemeManager().current().text_dim}; font-size: 13px;")
         name_label.setFont(QFont("Microsoft YaHei", 12))
         name_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         name_layout.addWidget(name_label)
@@ -2533,7 +2776,7 @@ class AddGameDialog(QDialog):
 
         cover_layout = QHBoxLayout()
         self.cover_path = QLabel("未选择")
-        self.cover_path.setStyleSheet("color: #8a8a8a; font-size: 12px;")
+        self.cover_path.setStyleSheet(f"color: {ThemeManager().current().text_dim}; font-size: 12px;")
         self.cover_path.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         cover_layout.addWidget(self.cover_path)
         cover_btn = QPushButton("选择封面")
@@ -2546,7 +2789,7 @@ class AddGameDialog(QDialog):
         # exe 文件选择
         exe_layout = QHBoxLayout()
         self.exe_path_label = QLabel("未选择")
-        self.exe_path_label.setStyleSheet("color: #8a8a8a; font-size: 12px;")
+        self.exe_path_label.setStyleSheet(f"color: {ThemeManager().current().text_dim}; font-size: 12px;")
         self.exe_path_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         exe_layout.addWidget(self.exe_path_label)
         exe_btn = QPushButton("选择exe")
@@ -2591,7 +2834,7 @@ class AddGameDialog(QDialog):
         if file_path:
             self._cover_file = file_path
             self.cover_path.setText(Path(file_path).name)
-            self.cover_path.setStyleSheet("color: #66c0f4; font-size: 11px;")
+            self.cover_path.setStyleSheet(f"color: {ThemeManager().current().accent_glow}; font-size: 11px;")
 
     def _select_exe(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -2602,7 +2845,7 @@ class AddGameDialog(QDialog):
         if file_path:
             self._exe_file = file_path
             self.exe_path_label.setText(Path(file_path).name)
-            self.exe_path_label.setStyleSheet("color: #66c0f4; font-size: 11px;")
+            self.exe_path_label.setStyleSheet(f"color: {ThemeManager().current().accent_glow}; font-size: 11px;")
             # 自动提取exe文件名（不含扩展名）作为游戏名称
             exe_name = Path(file_path).stem
             if not self.name_edit.text().strip():
@@ -2636,7 +2879,7 @@ class AddGameDialog(QDialog):
         self.accept()
 
     def _style(self):
-        return "QDialog { background-color: #1a2330; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; }"
+        return f"QDialog {{ background-color: {ThemeManager().current().bg_light}; border: 1px solid {ThemeManager().current().border}; border-radius: 8px; }}"
 
     def _input_style(self):
         return (
@@ -2672,7 +2915,7 @@ class AddGameDialog(QDialog):
             "  width: 30px;"
             "}"
             "QComboBox QAbstractItemView {"
-            "  background: #1a2330;"
+            f"  background: {ThemeManager().current().bg_light};"
             "  color: white;"
             "  border: 1px solid rgba(255,255,255,0.1);"
             "  selection-background-color: rgba(26,159,255,0.3);"
@@ -2770,13 +3013,7 @@ class MainWindow(QMainWindow):
         self._check_root_path()
         self._load_games()
 
-        self.setStyleSheet(
-            "QMainWindow, QWidget {"
-            "  background-color: #0e141b;"
-            "  color: #ffffff;"
-            "  font-family: \"Microsoft YaHei\", \"Segoe UI\", sans-serif;"
-            "}"
-        )
+        self.setStyleSheet(global_stylesheet())
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._update_time)
@@ -2787,15 +3024,15 @@ class MainWindow(QMainWindow):
         self.topbar = QWidget(self.central)
         self.topbar.setFixedHeight(TOPBAR_H)
         self.topbar.setStyleSheet(
-            "background: rgba(14,20,27,0.95);"
-            "border-bottom: 1px solid rgba(255,255,255,0.05);"
+            f"background: {ThemeManager().current().bg}F2;"
+            f"border-bottom: 1px solid {ThemeManager().current().border};"
         )
         layout = QHBoxLayout(self.topbar)
         layout.setContentsMargins(20, 0, 20, 0)
 
         self.logo_label = QLabel("GameGallery", self.topbar)
         self.logo_label.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
-        self.logo_label.setStyleSheet("color: #66c0f4;")
+        self.logo_label.setStyleSheet(f"color: {ThemeManager().current().accent_glow};")
         layout.addWidget(self.logo_label)
 
         layout.addSpacing(30)
@@ -2808,17 +3045,17 @@ class MainWindow(QMainWindow):
 
         self.total_games_label = QLabel("游戏: 0", self.stats_widget)
         self.total_games_label.setFont(QFont("Microsoft YaHei", 11))
-        self.total_games_label.setStyleSheet("color: #8a8a8a;")
+        self.total_games_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         stats_layout.addWidget(self.total_games_label)
 
         self.total_cg_label = QLabel("CG: 0", self.stats_widget)
         self.total_cg_label.setFont(QFont("Microsoft YaHei", 11))
-        self.total_cg_label.setStyleSheet("color: #8a8a8a;")
+        self.total_cg_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         stats_layout.addWidget(self.total_cg_label)
 
         self.recent_added_label = QLabel("最近添加: -", self.stats_widget)
         self.recent_added_label.setFont(QFont("Microsoft YaHei", 11))
-        self.recent_added_label.setStyleSheet("color: #8a8a8a;")
+        self.recent_added_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         stats_layout.addWidget(self.recent_added_label)
 
         layout.addWidget(self.stats_widget)
@@ -2855,7 +3092,7 @@ class MainWindow(QMainWindow):
         self.fav_filter_btn.setStyleSheet(
             "QPushButton {"
             "  background: rgba(255,255,255,0.06);"
-            "  color: #8a8a8a;"
+            f"  color: {ThemeManager().current().text_dim};"
             "  border: 1px solid rgba(255,255,255,0.1);"
             "  border-radius: 4px;"
             "}"
@@ -2875,13 +3112,13 @@ class MainWindow(QMainWindow):
         self.add_btn.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
         self.add_btn.setStyleSheet(
             "QPushButton {"
-            "  background: #1a9fff;"
+            f"  background: {ThemeManager().current().accent};"
             "  color: white;"
             "  border: none;"
             "  border-radius: 4px;"
             "}"
             "QPushButton:hover {"
-            "  background: #66c0f4;"
+            f"  background: {ThemeManager().current().accent_glow};"
             "}"
         )
         self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2892,7 +3129,7 @@ class MainWindow(QMainWindow):
 
         self.time_label = QLabel(self.topbar)
         self.time_label.setFont(QFont("Microsoft YaHei", 12))
-        self.time_label.setStyleSheet("color: #8a8a8a;")
+        self.time_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
         layout.addWidget(self.time_label)
 
         self.main_layout.addWidget(self.topbar)
@@ -2917,7 +3154,7 @@ class MainWindow(QMainWindow):
             self.fav_filter_btn.setStyleSheet(
                 "QPushButton {"
                 "  background: rgba(255,255,255,0.06);"
-                "  color: #8a8a8a;"
+                f"  color: {ThemeManager().current().text_dim};"
                 "  border: 1px solid rgba(255,255,255,0.1);"
                 "  border-radius: 4px;"
                 "}"
@@ -2997,7 +3234,7 @@ class MainWindow(QMainWindow):
             self.bottombar
         )
         self.status_label.setFont(QFont("Microsoft YaHei", 10))
-        self.status_label.setStyleSheet("color: rgba(255,255,255,0.3);")
+        self.status_label.setStyleSheet(f"color: {ThemeManager().current().text_dim}80;")
         layout.addWidget(self.status_label)
 
         layout.addStretch()
@@ -3017,6 +3254,12 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
 
         about = menu.addAction("关于 GameGallery")
+
+        theme_menu = menu.addMenu("主题")
+        for name in ThemeManager().names():
+            act = theme_menu.addAction(name)
+            act.triggered.connect(lambda checked, n=name: self._apply_theme(n))
+
         menu.addSeparator()
         export_backup = menu.addAction("导出备份...")
         import_backup = menu.addAction("导入备份...")
@@ -3043,6 +3286,25 @@ class MainWindow(QMainWindow):
             self._export_backup()
         elif action == import_backup:
             self._import_backup()
+
+    def _apply_theme(self, name: str):
+        """切换主题并刷新界面"""
+        if not ThemeManager().apply(name):
+            return
+        self.setStyleSheet(global_stylesheet())
+        self.topbar.setStyleSheet(
+            f"background: {ThemeManager().current().bg}F2;"
+            f"border-bottom: 1px solid {ThemeManager().current().border};"
+        )
+        self.logo_label.setStyleSheet(f"color: {ThemeManager().current().accent_glow};")
+        self.total_games_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
+        self.total_cg_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
+        self.recent_added_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
+        self.time_label.setStyleSheet(f"color: {ThemeManager().current().text_dim};")
+        self.status_label.setStyleSheet(f"color: {ThemeManager().current().text_dim}80;")
+        # 重新加载以刷新 paintEvent
+        self._refresh()
+        QMessageBox.information(self, "主题", f"已切换到主题：{name}")
 
     def _is_backup_excluded(self, path: Path) -> bool:
         """判断路径是否应被排除在备份之外"""
@@ -3342,7 +3604,7 @@ class MainWindow(QMainWindow):
             )
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setFont(QFont("Microsoft YaHei", 16))
-            empty.setStyleSheet("color: #8a8a8a; padding: 100px;")
+            empty.setStyleSheet(f"color: {ThemeManager().current().text_dim}; padding: 100px;")
             self.rows_layout.addWidget(empty)
             return
 
