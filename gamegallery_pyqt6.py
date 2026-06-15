@@ -223,14 +223,6 @@ def global_stylesheet() -> str:
     QScrollBar::handle:hover {{
         background: {t.border_light};
     }}
-    QMenu {{
-        background: {t.bg_light};
-        color: {t.text};
-        border: 1px solid {t.border};
-    }}
-    QMenu::item:selected {{
-        background: {t.accent}40;
-    }}
     QToolTip {{
         background: {t.bg_light};
         color: {t.text};
@@ -280,6 +272,14 @@ class GameInfo:
     note: str = ""
     rating: int = 0
     added_time: Optional[float] = None
+
+    def __hash__(self):
+        return hash(self.path)
+
+    def __eq__(self, other):
+        if not isinstance(other, GameInfo):
+            return False
+        return self.path == other.path
 
 # ============================================================================
 # 元数据管理
@@ -507,6 +507,89 @@ def save_game_note(path: Path, text: str):
                 note_file.unlink()
     except Exception as e:
         print(f"保存笔记失败 {note_file}: {e}")
+
+
+def add_image_to_game(
+    parent: QWidget,
+    game: GameInfo,
+    img_type: str,
+    on_saved: Callable[[], None]
+) -> bool:
+    """为游戏设置封面或壁纸，支持裁剪。成功返回 True，失败返回 False。
+    on_saved 在图片保存成功、路径已更新后调用，用于各 UI 特有的重载逻辑。
+    """
+    file_path, _ = QFileDialog.getOpenFileName(
+        parent, f"选择{img_type}图片", "",
+        "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp)",
+        options=FILE_DIALOG_OPTIONS
+    )
+    if not file_path:
+        return False
+
+    ext = Path(file_path).suffix
+    dst = game.path / f"{img_type}{ext}"
+
+    # 如果选择的是同一个文件，不做任何操作
+    if Path(file_path).resolve() == dst.resolve():
+        QMessageBox.information(parent, "提示", "选择的图片已经是当前文件")
+        return False
+
+    # 打开裁剪对话框
+    target_w = CARD_W if img_type == "cover" else 1920
+    target_h = CARD_H if img_type == "cover" else 1080
+    crop_dlg = ImageCropDialog(file_path, target_w, target_h, f"裁剪{img_type}", parent)
+    if crop_dlg.exec() != QDialog.DialogCode.Accepted:
+        return False
+
+    cropped = crop_dlg.get_cropped_pixmap()
+    if cropped.isNull():
+        QMessageBox.critical(parent, "错误", "裁剪失败")
+        return False
+
+    # 删除旧文件（如果存在且不是新文件）
+    if img_type == "cover" and game.cover:
+        old = game.path / f"cover{game.cover.suffix}"
+        if old.exists() and old.resolve() != dst.resolve():
+            old.unlink()
+    elif img_type == "wallpaper" and game.wallpaper:
+        old = game.path / f"wallpaper{game.wallpaper.suffix}"
+        if old.exists() and old.resolve() != dst.resolve():
+            old.unlink()
+
+    # 保存裁剪后的图片
+    try:
+        cropped.save(str(dst))
+        if img_type == "cover":
+            game.cover = dst
+            game.cover_pixmap = None
+        else:
+            game.wallpaper = dst
+            game.wallpaper_pixmap = None
+
+        on_saved()
+
+        QMessageBox.information(parent, "成功", f"{img_type}已更新")
+        return True
+    except Exception as e:
+        QMessageBox.critical(parent, "错误", f"保存失败: {e}")
+        return False
+
+
+def _validate_name(name: str, label: str = "名称") -> Optional[str]:
+    """验证名称是否合法。合法返回 None，不合法返回错误信息。"""
+    if not name or not name.strip():
+        return f"{label}不能为空"
+    invalid_chars = '\\/:*?"<>|'
+    if any(c in name for c in invalid_chars):
+        return f"{label}不能包含以下字符：{invalid_chars}"
+    reserved = {'CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5',
+                'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4',
+                'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'}
+    if name.upper() in reserved:
+        return f"{label}不能为 Windows 保留名称：{name}"
+    if name.strip() == '.':
+        return f"{label}不能为 '.'"
+    return None
 
 
 def scan_games() -> List[GameInfo]:
@@ -1075,6 +1158,8 @@ class GameCard(QWidget):
     refresh_requested = pyqtSignal()
     favorite_toggled = pyqtSignal(object)
     drag_started = pyqtSignal(object)
+    selection_toggled = pyqtSignal(object, bool)
+    shift_selection_requested = pyqtSignal(object)
 
     def __init__(self, game: GameInfo, parent=None):
         super().__init__(parent)
@@ -1086,6 +1171,7 @@ class GameCard(QWidget):
         self._scale = 1.0
         self._glow = 0
         self._drag_start_pos = None
+        self.is_selected = False
 
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(200)
@@ -1159,29 +1245,45 @@ class GameCard(QWidget):
     def mouseReleaseEvent(self, event):
         self._drag_start_pos = None
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.game)
+            modifiers = event.modifiers()
+            if modifiers & Qt.KeyboardModifier.ControlModifier:
+                self.is_selected = not self.is_selected
+                self.selection_toggled.emit(self.game, self.is_selected)
+                self.update()
+            elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+                self.shift_selection_requested.emit(self.game)
+            else:
+                self.clicked.emit(self.game)
         elif event.button() == Qt.MouseButton.RightButton:
             self._show_context_menu(event.pos())
         super().mouseReleaseEvent(event)
+
+    def set_selected(self, selected: bool):
+        """外部设置选中状态"""
+        if self.is_selected != selected:
+            self.is_selected = selected
+            self.update()
 
     def _show_context_menu(self, pos):
         """右键菜单 - 不使用样式表避免崩溃"""
         menu = QMenu(self)
         # 不设置样式表，使用系统默认样式
 
-        has_cover = self.game.cover and self.game.cover.exists()
-        has_wallpaper = self.game.wallpaper and self.game.wallpaper.exists()
+        has_cover = bool(self.game.cover and self.game.cover.exists())
+        has_wallpaper = bool(self.game.wallpaper and self.game.wallpaper.exists())
         has_exe = self.game.exe_path and Path(self.game.exe_path).exists()
 
         if not has_cover:
             add_cover = menu.addAction("设置封面")
         else:
             add_cover = menu.addAction("更换封面")
+            del_cover = menu.addAction("删除封面")
 
         if not has_wallpaper:
             add_wallpaper = menu.addAction("设置壁纸")
         else:
             add_wallpaper = menu.addAction("更换壁纸")
+            del_wallpaper = menu.addAction("删除壁纸")
 
         add_cg = menu.addAction("添加CG...")
         # 移动到分类
@@ -1207,8 +1309,12 @@ class GameCard(QWidget):
 
         if action == add_cover:
             self._add_image("cover")
+        elif 'del_cover' in locals() and action == del_cover:
+            self._delete_image("cover")
         elif action == add_wallpaper:
             self._add_image("wallpaper")
+        elif 'del_wallpaper' in locals() and action == del_wallpaper:
+            self._delete_image("wallpaper")
         elif action == add_cg:
             self._add_cg()
         elif action == fav_action:
@@ -1446,63 +1552,12 @@ class GameCard(QWidget):
 
     def _add_image(self, img_type: str):
         """添加/更换封面或壁纸，支持裁剪调整"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, f"选择{img_type}图片", "",
-            "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp)",
-            options=FILE_DIALOG_OPTIONS
-        )
-        if not file_path:
-            return
-
-        # 如果选择的是同一个文件，不做任何操作
-        ext = Path(file_path).suffix
-        dst = self.game.path / f"{img_type}{ext}"
-        if Path(file_path).resolve() == dst.resolve():
-            QMessageBox.information(self, "提示", "选择的图片已经是当前文件")
-            return
-
-        # 打开裁剪对话框
-        target_w = CARD_W if img_type == "cover" else 1920
-        target_h = CARD_H if img_type == "cover" else 1080
-        crop_dlg = ImageCropDialog(file_path, target_w, target_h, f"裁剪{img_type}", self)
-        if crop_dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        cropped = crop_dlg.get_cropped_pixmap()
-        if cropped.isNull():
-            QMessageBox.critical(self, "错误", "裁剪失败")
-            return
-
-        # 删除旧文件（如果存在且不是新文件）
-        if img_type == "cover" and self.game.cover:
-            old = self.game.path / f"cover{self.game.cover.suffix}"
-            if old.exists() and old.resolve() != dst.resolve():
-                old.unlink()
-        elif img_type == "wallpaper" and self.game.wallpaper:
-            old = self.game.path / f"wallpaper{self.game.wallpaper.suffix}"
-            if old.exists() and old.resolve() != dst.resolve():
-                old.unlink()
-
-        # 保存裁剪后的图片
-        try:
-            cropped.save(str(dst))
-            # 更新路径
-            if img_type == "cover":
-                self.game.cover = dst
-                self.game.cover_pixmap = None
-            else:
-                self.game.wallpaper = dst
-                self.game.wallpaper_pixmap = None
-
-            # 重新加载并显示
+        def _on_saved():
             self._load_images()
             self.update()
 
-            QMessageBox.information(self, "成功", f"{img_type}已更新")
-            # 通知父窗口刷新
+        if add_image_to_game(self, self.game, img_type, _on_saved):
             self.refresh_requested.emit()
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存失败: {e}")
 
     def _add_cg(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -1530,6 +1585,33 @@ class GameCard(QWidget):
 
         QMessageBox.information(self, "成功", f"已添加 {success}/{len(files)} 张CG")
         self.refresh_requested.emit()
+
+    def _delete_image(self, img_type: str):
+        """删除封面或壁纸文件"""
+        target = self.game.cover if img_type == "cover" else self.game.wallpaper
+        if not target or not target.exists():
+            QMessageBox.warning(self, "提示", f"当前没有{img_type}")
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除 {img_type} 吗？\n{target.name}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            target.unlink()
+            if img_type == "cover":
+                self.game.cover = None
+                self.game.cover_pixmap = None
+            else:
+                self.game.wallpaper = None
+                self.game.wallpaper_pixmap = None
+            self.update()
+            self.refresh_requested.emit()
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"删除失败: {e}")
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1613,13 +1695,18 @@ class GameCard(QWidget):
 
         # 收藏星形图标
         if self.game.favorite:
-            star_path = QPainterPath()
             star_x = x + w - 32
             star_y = y + 8
-            painter.fillPath(star_path, QColor(255, 200, 0, 220))
             painter.setPen(QColor(255, 170, 0, 255))
             painter.setFont(QFont("Microsoft YaHei", 14, QFont.Weight.Bold))
             painter.drawText(QRect(star_x, star_y, 24, 24), Qt.AlignmentFlag.AlignCenter, "★")
+
+        # 选中状态边框
+        if self.is_selected:
+            sel_pen = QPen(COL_ACCENT)
+            sel_pen.setWidth(3)
+            painter.setPen(sel_pen)
+            painter.drawPath(clip)
 
         # exe 启动图标
         if self.game.exe_path and Path(self.game.exe_path).exists():
@@ -1647,6 +1734,7 @@ class GameCard(QWidget):
 # ============================================================================
 class CGThumb(QWidget):
     clicked = pyqtSignal(str, str)
+    delete_requested = pyqtSignal(str)
 
     def __init__(self, path: Path, game_name: str, parent=None):
         super().__init__(parent)
@@ -1659,6 +1747,16 @@ class CGThumb(QWidget):
 
         # 加载原始图片，在 paintEvent 中按需高质量缩放，避免二次模糊
         _image_loader.load_once(self.path, QSize(), self._on_loaded)
+
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _show_context_menu(self, pos):
+        menu = QMenu(self)
+        delete_action = menu.addAction("删除CG")
+        action = menu.exec(self.mapToGlobal(pos))
+        if action == delete_action:
+            self.delete_requested.emit(self.path)
 
     def _on_loaded(self, path: str, pixmap: QPixmap):
         if path == self.path:
@@ -1898,12 +1996,15 @@ class GameRow(QWidget):
     refresh_requested = pyqtSignal()
     game_reordered = pyqtSignal(str, str, str)  # source_key, target_key, row_title
     game_moved_to_category = pyqtSignal(object, str, str)  # game, target_category, target_sub
+    selection_toggled = pyqtSignal(object, bool)
+    shift_selection_requested = pyqtSignal(object, object)  # anchor_game, target_game
 
     def __init__(self, title: str, games: List[GameInfo], parent=None):
         super().__init__(parent)
         self.setFixedHeight(CARD_H + ROW_TITLE_H + 30)
         self.title = title
         self._games = games[:]
+        self._cards: List[GameCard] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 10, 40, 10)
@@ -1939,7 +2040,10 @@ class GameRow(QWidget):
             card.refresh_requested.connect(self.refresh_requested.emit)
             card.favorite_toggled.connect(self._on_favorite_toggled)
             card.drag_started.connect(self._on_card_drag_started)
+            card.selection_toggled.connect(self.selection_toggled.emit)
+            card.shift_selection_requested.connect(self._on_shift_selection)
             h_layout.addWidget(card)
+            self._cards.append(card)
 
         h_layout.addStretch()
         self.scroll.setWidget(container)
@@ -1955,6 +2059,17 @@ class GameRow(QWidget):
 
     def _on_card_drag_started(self, game):
         pass
+
+    def _on_shift_selection(self, target_game: GameInfo):
+        """Shift 点击时，请求 MainWindow 根据最后选中的锚点和目标点选中范围"""
+        self.shift_selection_requested.emit(self._games, target_game)
+
+    def set_card_selected(self, game: GameInfo, selected: bool):
+        """设置指定游戏的卡片选中状态"""
+        for card in self._cards:
+            if card.game is game or card.game == game:
+                card.set_selected(selected)
+                break
 
     def _title_mouse_press(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -2332,6 +2447,41 @@ class DetailPage(QWidget):
         no_cover_layout.addStretch()
         info_layout.addWidget(self.no_cover_widget)
 
+        # 图片管理（有封面/壁纸时显示删除按钮）
+        self.image_manage_widget = QWidget(self.info_widget)
+        image_manage_layout = QHBoxLayout(self.image_manage_widget)
+        image_manage_layout.setContentsMargins(0, 0, 0, 0)
+        image_manage_layout.setSpacing(10)
+
+        self.del_cover_btn = QPushButton("删除封面", self.image_manage_widget)
+        self.del_cover_btn.setFixedSize(100, 32)
+        self.del_cover_btn.setFont(QFont("Microsoft YaHei", 11))
+        self.del_cover_btn.setStyleSheet(
+            "QPushButton {"
+            "  background: rgba(231,76,60,0.2);"
+            "  color: #e74c3c;"
+            "  border: 1px solid rgba(231,76,60,0.4);"
+            "  border-radius: 4px;"
+            "}"
+            "QPushButton:hover {"
+            "  background: rgba(231,76,60,0.35);"
+            "}"
+        )
+        self.del_cover_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.del_cover_btn.clicked.connect(lambda: self._delete_detail_image("cover"))
+        image_manage_layout.addWidget(self.del_cover_btn)
+
+        self.del_wallpaper_btn = QPushButton("删除壁纸", self.image_manage_widget)
+        self.del_wallpaper_btn.setFixedSize(100, 32)
+        self.del_wallpaper_btn.setFont(QFont("Microsoft YaHei", 11))
+        self.del_wallpaper_btn.setStyleSheet(self.del_cover_btn.styleSheet())
+        self.del_wallpaper_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.del_wallpaper_btn.clicked.connect(lambda: self._delete_detail_image("wallpaper"))
+        image_manage_layout.addWidget(self.del_wallpaper_btn)
+
+        image_manage_layout.addStretch()
+        info_layout.addWidget(self.image_manage_widget)
+
         info_layout.addStretch()
 
         self.back_btn = QPushButton("<  返回画廊", self.info_widget)
@@ -2425,9 +2575,12 @@ class DetailPage(QWidget):
         self._update_rating_stars()
         self.note_edit.setPlainText(game.note)
 
-        has_cover = game.cover and game.cover.exists()
-        has_wallpaper = game.wallpaper and game.wallpaper.exists()
+        has_cover = bool(game.cover and game.cover.exists())
+        has_wallpaper = bool(game.wallpaper and game.wallpaper.exists())
         self.no_cover_widget.setVisible(not (has_cover or has_wallpaper))
+        self.image_manage_widget.setVisible(has_cover or has_wallpaper)
+        self.del_cover_btn.setVisible(has_cover)
+        self.del_wallpaper_btn.setVisible(has_wallpaper)
 
         # 更新收藏按钮状态
         self._update_fav_btn()
@@ -2452,6 +2605,7 @@ class DetailPage(QWidget):
             for i, cg_path in enumerate(game.cg_files):
                 thumb = CGThumb(cg_path, game.name, self.cg_container)
                 thumb.clicked.connect(lambda p, g, idx=i: self._on_cg_thumb_clicked(idx))
+                thumb.delete_requested.connect(self._delete_cg)
                 self.cg_grid.addWidget(thumb, i // cols, i % cols)
         else:
             empty = QLabel("暂无 CG", self.cg_container)
@@ -2607,67 +2761,82 @@ class DetailPage(QWidget):
         """中间大图翻页时同步更新 CG 数量显示（可选扩展）"""
         pass
 
+    def _delete_cg(self, cg_path: str):
+        """删除单个 CG 图片"""
+        if not self.game:
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除 CG [{Path(cg_path).name}] 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            p = Path(cg_path)
+            if p.exists():
+                p.unlink()
+            # 从列表中移除
+            self.game.cg_files = [f for f in self.game.cg_files if str(f) != cg_path]
+            self.cg_count_label.setText(f"CG 数量: {len(self.game.cg_files)}")
+            self.refresh_requested.emit()
+            # 重建 CG 面板
+            self.set_game(self.game)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"删除失败: {e}")
+
+    def _delete_detail_image(self, img_type: str):
+        """在详情页删除封面或壁纸"""
+        if not self.game:
+            return
+        target = self.game.cover if img_type == "cover" else self.game.wallpaper
+        if not target or not target.exists():
+            QMessageBox.warning(self, "提示", f"当前没有{img_type}")
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除 {img_type} 吗？\n{target.name}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            target.unlink()
+            if img_type == "cover":
+                self.game.cover = None
+                self.game.cover_pixmap = None
+            else:
+                self.game.wallpaper = None
+                self.game.wallpaper_pixmap = None
+                self._bg_original_pixmap = None
+                self.bg_label.setPixmap(QPixmap())
+            # 刷新显示状态
+            has_cover = bool(self.game.cover and self.game.cover.exists())
+            has_wallpaper = bool(self.game.wallpaper and self.game.wallpaper.exists())
+            self.no_cover_widget.setVisible(not (has_cover or has_wallpaper))
+            self.image_manage_widget.setVisible(has_cover or has_wallpaper)
+            self.del_cover_btn.setVisible(has_cover)
+            self.del_wallpaper_btn.setVisible(has_wallpaper)
+            self.refresh_requested.emit()
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"删除失败: {e}")
+
     def _add_detail_image(self, img_type: str):
         """在详情页添加封面/壁纸，支持裁剪调整"""
         if not self.game:
             return
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, f"选择{img_type}图片", "",
-            "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp)",
-            options=FILE_DIALOG_OPTIONS
-        )
-        if not file_path:
-            return
 
-        ext = Path(file_path).suffix
-        dst = self.game.path / f"{img_type}{ext}"
-
-        # 如果选择的是同一个文件，不做任何操作
-        if Path(file_path).resolve() == dst.resolve():
-            QMessageBox.information(self, "提示", "选择的图片已经是当前文件")
-            return
-
-        # 打开裁剪对话框
-        target_w = CARD_W if img_type == "cover" else 1920
-        target_h = CARD_H if img_type == "cover" else 1080
-        crop_dlg = ImageCropDialog(file_path, target_w, target_h, f"裁剪{img_type}", self)
-        if crop_dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        cropped = crop_dlg.get_cropped_pixmap()
-        if cropped.isNull():
-            QMessageBox.critical(self, "错误", "裁剪失败")
-            return
-
-        # 删除旧文件（如果存在且不是新文件）
-        if img_type == "cover" and self.game.cover:
-            old = self.game.path / f"cover{self.game.cover.suffix}"
-            if old.exists() and old.resolve() != dst.resolve():
-                old.unlink()
-        elif img_type == "wallpaper" and self.game.wallpaper:
-            old = self.game.path / f"wallpaper{self.game.wallpaper.suffix}"
-            if old.exists() and old.resolve() != dst.resolve():
-                old.unlink()
-
-        # 保存裁剪后的图片
-        try:
-            cropped.save(str(dst))
-            # 更新路径
-            if img_type == "cover":
-                self.game.cover = dst
-                self.game.cover_pixmap = None
-            else:
-                self.game.wallpaper = dst
-                self.game.wallpaper_pixmap = None
-
-            # 重新加载背景
-            _image_loader.load_once(str(dst), QSize(), self._on_wp_loaded)
-
+        def _on_saved():
+            _image_loader.load_once(
+                str(self.game.cover if img_type == "cover" else self.game.wallpaper),
+                QSize(), self._on_wp_loaded
+            )
             self.no_cover_widget.setVisible(False)
-            QMessageBox.information(self, "成功", f"{img_type}已添加")
+
+        if add_image_to_game(self, self.game, img_type, _on_saved):
             self.refresh_requested.emit()
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存失败: {e}")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2788,8 +2957,13 @@ class AddCategoryDialog(QDialog):
     def _on_ok(self):
         big = self.big_edit.text().strip()
         sub = self.sub_edit.text().strip()
-        if not big or not sub:
-            QMessageBox.warning(self, "提示", "大类和小类名称不能为空")
+        err = _validate_name(big, "大类名称")
+        if err:
+            QMessageBox.warning(self, "提示", err)
+            return
+        err = _validate_name(sub, "小类名称")
+        if err:
+            QMessageBox.warning(self, "提示", err)
             return
         if add_category(big, sub):
             QMessageBox.information(self, "成功", f"分类 [{big}/{sub}] 已创建")
@@ -2953,8 +3127,9 @@ class AddGameDialog(QDialog):
 
     def _on_ok(self):
         name = self.name_edit.text().strip()
-        if not name:
-            QMessageBox.warning(self, "提示", "游戏名称不能为空")
+        err = _validate_name(name, "游戏名称")
+        if err:
+            QMessageBox.warning(self, "提示", err)
             return
 
         data = self.cat_combo.currentData()
@@ -3102,12 +3277,21 @@ class MainWindow(QMainWindow):
         self.detail_page.game_info_changed.connect(self._update_status_bar)
         self.stack.addWidget(self.detail_page)
 
+        self._batch_toolbar: Optional[QWidget] = None
+        self._build_batch_toolbar()
         self._build_bottombar()
 
         self.games: List[GameInfo] = []
         self._show_favorites_only = False
         self._search_text = ""
         self._current_game: Optional[GameInfo] = None
+        self.selected_games: Set[GameInfo] = set()
+        self._last_selected_game: Optional[GameInfo] = None
+        self._rows: List[GameRow] = []  # 当前可见的 GameRow
+        self._row_data: List[Tuple[str, List[GameInfo]]] = []  # 所有行数据
+        self._placeholder_height = CARD_H + ROW_TITLE_H + 30
+        self._virtual_scroll_enabled = False
+        self._flat_games: List[GameInfo] = []
 
         # 检查并确认数据目录
         self._check_root_path()
@@ -3297,6 +3481,67 @@ class MainWindow(QMainWindow):
             self.time_label.setText(QDateTime.currentDateTime().toString("HH:mm"))
         except RuntimeError:
             pass
+
+    def _btn_style(self, color: str) -> str:
+        return (
+            f"QPushButton {{"
+            f"  background: {color};"
+            f"  color: white;"
+            f"  border: none;"
+            f"  border-radius: 4px;"
+            f"  font-size: 13px;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background: {color}dd;"
+            f"}}"
+        )
+
+    def _build_batch_toolbar(self):
+        """批量操作工具栏（有选中游戏时显示）"""
+        self._batch_toolbar = QWidget(self.central)
+        self._batch_toolbar.setFixedHeight(42)
+        self._batch_toolbar.setStyleSheet(
+            f"background: {ThemeManager().current().bg_light};"
+            f"border-bottom: 1px solid {ThemeManager().current().border};"
+        )
+        layout = QHBoxLayout(self._batch_toolbar)
+        layout.setContentsMargins(20, 4, 20, 4)
+        layout.setSpacing(12)
+
+        self._batch_label = QLabel("已选 0 个", self._batch_toolbar)
+        self._batch_label.setFont(QFont("Microsoft YaHei", 11))
+        self._batch_label.setStyleSheet(f"color: {ThemeManager().current().text};")
+        layout.addWidget(self._batch_label)
+
+        layout.addSpacing(20)
+
+        btn_move = QPushButton("批量移动", self._batch_toolbar)
+        btn_move.setFixedSize(90, 30)
+        btn_move.setStyleSheet(self._btn_style(ThemeManager().current().accent))
+        btn_move.clicked.connect(self._batch_move_to_category)
+        layout.addWidget(btn_move)
+
+        btn_delete = QPushButton("批量删除", self._batch_toolbar)
+        btn_delete.setFixedSize(90, 30)
+        btn_delete.setStyleSheet(self._btn_style("#e74c3c"))
+        btn_delete.clicked.connect(self._batch_delete)
+        layout.addWidget(btn_delete)
+
+        btn_cg = QPushButton("批量导入CG", self._batch_toolbar)
+        btn_cg.setFixedSize(100, 30)
+        btn_cg.setStyleSheet(self._btn_style(ThemeManager().current().accent))
+        btn_cg.clicked.connect(self._batch_import_cg)
+        layout.addWidget(btn_cg)
+
+        btn_clear = QPushButton("清空选择", self._batch_toolbar)
+        btn_clear.setFixedSize(90, 30)
+        btn_clear.setStyleSheet(self._btn_style(ThemeManager().current().text_dim))
+        btn_clear.clicked.connect(self._clear_selection)
+        layout.addWidget(btn_clear)
+
+        layout.addStretch()
+        self.main_layout.insertWidget(1, self._batch_toolbar)
+        self._batch_toolbar.hide()
 
     def _build_bottombar(self):
         self.bottombar = QWidget(self.central)
@@ -3667,7 +3912,37 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"无法打开文件夹: {e}")
 
     def _load_games(self):
+        # 保存图片缓存：按路径索引旧 GameInfo 的 pixmap 缓存
+        old_pixmap_cache = {}
+        for g in self.games:
+            old_pixmap_cache[g.path] = {
+                'cover_pixmap': g.cover_pixmap,
+                'wallpaper_pixmap': g.wallpaper_pixmap,
+                'exe_pixmap': g.exe_pixmap,
+            }
+
+        # 保存选中状态 key，以便刷新后重建（scan_games 会创建新的 GameInfo 对象）
+        selected_keys = {GameMetadata._game_key(g) for g in self.selected_games}
+        last_key = GameMetadata._game_key(self._last_selected_game) if self._last_selected_game else None
+
         self.games = scan_games()
+
+        # 恢复图片缓存（路径相同则复用旧 QPixmap，避免刷新时重新异步加载）
+        for g in self.games:
+            if g.path in old_pixmap_cache:
+                cache = old_pixmap_cache[g.path]
+                if cache['cover_pixmap'] and not cache['cover_pixmap'].isNull():
+                    g.cover_pixmap = cache['cover_pixmap']
+                if cache['wallpaper_pixmap'] and not cache['wallpaper_pixmap'].isNull():
+                    g.wallpaper_pixmap = cache['wallpaper_pixmap']
+                if cache['exe_pixmap'] and not cache['exe_pixmap'].isNull():
+                    g.exe_pixmap = cache['exe_pixmap']
+
+        # 重建选中状态
+        key_to_game = {GameMetadata._game_key(g): g for g in self.games}
+        self.selected_games = {key_to_game[k] for k in selected_keys if k in key_to_game}
+        self._last_selected_game = key_to_game.get(last_key)
+
         self._update_stats()
         self._build_rows()
 
@@ -3690,7 +3965,29 @@ class MainWindow(QMainWindow):
 
         return result
 
+    def _create_row(self, title: str, games: List[GameInfo]) -> GameRow:
+        """创建一个 GameRow 并连接信号"""
+        row = GameRow(title, games, self.rows_container)
+        row.game_selected.connect(self._show_detail)
+        row.game_delete.connect(self._on_delete_game)
+        row.refresh_requested.connect(self._refresh)
+        row.selection_toggled.connect(self._on_card_selection_toggled)
+        row.shift_selection_requested.connect(self._on_shift_selection)
+        if " / " in title:
+            row.game_moved_to_category.connect(self._on_game_moved_to_category)
+        row.setAcceptDrops(True)
+        # 同步多选状态到卡片（虚拟滚动下重建行时需要恢复选中高亮）
+        for card in row._cards:
+            card.set_selected(card.game in self.selected_games)
+        return row
+
     def _build_rows(self):
+        # 断开旧的滚动连接
+        try:
+            self.gallery_scroll.verticalScrollBar().valueChanged.disconnect(self._on_scroll_changed)
+        except Exception:
+            pass
+
         while self.rows_layout.count():
             item = self.rows_layout.takeAt(0)
             if item.widget():
@@ -3718,26 +4015,81 @@ class MainWindow(QMainWindow):
         for key in categories:
             categories[key].sort(key=lambda g: g.sort_weight)
 
+        self._row_data = []
         all_games = filtered[:8] if len(filtered) > 8 else filtered
         all_games.sort(key=lambda g: g.sort_weight)
-        row = GameRow("最近游戏", all_games, self.rows_container)
-        row.game_selected.connect(self._show_detail)
-        row.game_delete.connect(self._on_delete_game)
-        row.refresh_requested.connect(self._refresh)
-        row.setAcceptDrops(True)
-        self.rows_layout.addWidget(row)
+        self._row_data.append(("最近游戏", all_games))
 
         for cat_name, cat_games in categories.items():
             if len(cat_games) > 0:
-                row = GameRow(cat_name, cat_games, self.rows_container)
-                row.game_selected.connect(self._show_detail)
-                row.game_delete.connect(self._on_delete_game)
-                row.refresh_requested.connect(self._refresh)
-                row.game_moved_to_category.connect(self._on_game_moved_to_category)
-                row.setAcceptDrops(True)
+                self._row_data.append((cat_name, cat_games))
+
+        self._flat_games = []
+        for title, games in self._row_data:
+            self._flat_games.extend(games)
+
+        self._virtual_scroll_enabled = len(self._row_data) > 15 or len(filtered) > 200
+
+        if not self._virtual_scroll_enabled:
+            self._rows = []
+            for title, games in self._row_data:
+                row = self._create_row(title, games)
                 self.rows_layout.addWidget(row)
+                self._rows.append(row)
+            self.rows_layout.addStretch()
+            return
+
+        # 虚拟滚动：创建占位控件保持滚动条高度
+        self._placeholders: List[QWidget] = []
+        self._visible_row_indices: Set[int] = set()
+        for i, (title, games) in enumerate(self._row_data):
+            ph = QWidget(self.rows_container)
+            ph.setFixedHeight(self._placeholder_height)
+            self.rows_layout.addWidget(ph)
+            self._placeholders.append(ph)
 
         self.rows_layout.addStretch()
+        self.gallery_scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+        self._on_scroll_changed()
+
+    def _on_scroll_changed(self):
+        """虚拟滚动：只创建视口内及缓冲区的 GameRow"""
+        if not self._virtual_scroll_enabled or not self._row_data:
+            return
+
+        scrollbar = self.gallery_scroll.verticalScrollBar()
+        top = scrollbar.value()
+        viewport_h = self.gallery_scroll.viewport().height()
+        start = max(0, top // self._placeholder_height - 1)
+        end = min(len(self._row_data), (top + viewport_h) // self._placeholder_height + 3)
+        new_visible = set(range(start, end))
+
+        # 移除不再可见的行（从后往前避免索引变化问题）
+        for i in sorted(self._visible_row_indices - new_visible, reverse=True):
+            if i < self.rows_layout.count() - 1:  # 排除最后的 stretch
+                item = self.rows_layout.takeAt(i)
+                if item.widget():
+                    item.widget().deleteLater()
+                self.rows_layout.insertWidget(i, self._placeholders[i])
+            self._visible_row_indices.discard(i)
+
+        # 添加新可见行
+        for i in sorted(new_visible - self._visible_row_indices):
+            if i >= self.rows_layout.count() - 1:
+                continue
+            item = self.rows_layout.takeAt(i)
+            if item.widget():
+                item.widget().deleteLater()
+            row = self._create_row(*self._row_data[i])
+            self.rows_layout.insertWidget(i, row)
+            self._visible_row_indices.add(i)
+
+        # 同步 _rows 列表供选中状态使用
+        self._rows = []
+        for i in range(self.rows_layout.count() - 1):  # 排除 stretch
+            item = self.rows_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), GameRow):
+                self._rows.append(item.widget())
 
     def _on_game_moved_to_category(self, game: GameInfo, target_category: str, target_sub: str):
         """处理跨行拖拽移动游戏到其他分类"""
@@ -3792,7 +4144,278 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"移动失败: {e}")
 
+    def _on_card_selection_toggled(self, game: GameInfo, selected: bool):
+        """处理单个卡片 Ctrl 多选"""
+        if selected:
+            self.selected_games.add(game)
+            self._last_selected_game = game
+        else:
+            self.selected_games.discard(game)
+            if self._last_selected_game is game:
+                self._last_selected_game = None
+        self._update_batch_toolbar()
+
+    def _on_shift_selection(self, games: List[GameInfo], target_game: GameInfo):
+        """处理 Shift 范围选择（支持跨行）"""
+        if not self._last_selected_game or self._last_selected_game not in self._flat_games:
+            # 没有锚点或锚点已不在当前列表，把目标游戏加入选中
+            self.selected_games.add(target_game)
+            self._last_selected_game = target_game
+            self._update_selection_ui()
+            return
+
+        try:
+            start = self._flat_games.index(self._last_selected_game)
+            end = self._flat_games.index(target_game)
+        except ValueError:
+            return
+
+        if start > end:
+            start, end = end, start
+
+        for g in self._flat_games[start:end + 1]:
+            self.selected_games.add(g)
+        self._last_selected_game = target_game
+        self._update_selection_ui()
+
+    def _update_selection_ui(self):
+        """同步所有卡片的选中显示状态"""
+        for row in self._rows:
+            for card in row._cards:
+                card.set_selected(card.game in self.selected_games)
+        self._update_batch_toolbar()
+
+    def _update_batch_toolbar(self):
+        """更新批量操作工具栏显示"""
+        count = len(self.selected_games)
+        if self._batch_toolbar:
+            self._batch_label.setText(f"已选 {count} 个")
+            self._batch_toolbar.setVisible(count > 0)
+
+    def _clear_selection(self):
+        """清空所有选中"""
+        self.selected_games.clear()
+        self._last_selected_game = None
+        for row in self._rows:
+            for card in row._cards:
+                card.set_selected(False)
+        self._update_batch_toolbar()
+
+    def _batch_auto_backup(self) -> Optional[Path]:
+        """批量操作前自动备份当前数据"""
+        try:
+            ensure_root()
+            timestamp = int(QDateTime.currentDateTime().toSecsSinceEpoch())
+            auto_backup_dir = ROOT_PATH / ".deleted"
+            auto_backup_dir.mkdir(exist_ok=True)
+            auto_backup_zip = auto_backup_dir / f"auto_backup_{timestamp}.zip"
+            ok, _ = self._create_backup_zip(auto_backup_zip)
+            return auto_backup_zip if ok else None
+        except Exception as e:
+            print(f"自动备份失败: {e}")
+            return None
+
+    def _batch_move_to_category(self):
+        """批量移动选中游戏到目标分类"""
+        if not self.selected_games:
+            return
+
+        cats = get_categories()
+        items = []
+        for big, subs in cats.items():
+            for sub in subs:
+                items.append((f"{big} / {sub}", (big, sub)))
+        if not items:
+            QMessageBox.warning(self, "提示", "没有其他分类可用")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("批量移动")
+        dlg.setFixedSize(360, 160)
+        dlg.setStyleSheet(f"QDialog {{ background-color: {ThemeManager().current().bg_light}; border: 1px solid {ThemeManager().current().border}; border-radius: 8px; }}")
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        title = QLabel(f"将 {len(self.selected_games)} 个游戏移动到：")
+        title.setFont(QFont("Microsoft YaHei", 12))
+        title.setStyleSheet(f"color: {ThemeManager().current().text};")
+        layout.addWidget(title)
+
+        combo = QComboBox()
+        for label, data in items:
+            combo.addItem(label, data)
+        layout.addWidget(combo)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(dlg.reject)
+        btn_layout.addWidget(cancel)
+        ok = QPushButton("移动")
+        ok.clicked.connect(dlg.accept)
+        btn_layout.addWidget(ok)
+        layout.addLayout(btn_layout)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        target_big, target_sub = combo.currentData()
+        auto_backup = self._batch_auto_backup()
+
+        errors = []
+        moved = 0
+        for game in list(self.selected_games):
+            if game.category == target_big and game.sub == target_sub:
+                continue
+            src_path = Path(game.path)
+            dst_path = ROOT_PATH / target_big / target_sub / game.name
+            if dst_path.exists():
+                errors.append(f"[{game.name}] 目标分类已存在")
+                continue
+            try:
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src_path), str(dst_path))
+                old_key = GameMetadata._game_key(game)
+                game.category = target_big
+                game.sub = target_sub
+                game.path = dst_path
+                if game.cover:
+                    game.cover = dst_path / game.cover.name
+                if game.wallpaper:
+                    game.wallpaper = dst_path / game.wallpaper.name
+                cg_dir = dst_path / "cg"
+                if cg_dir.exists():
+                    game.cg_files = [f for f in sorted(cg_dir.iterdir()) if f.suffix.lower() in SUPPORTED_EXTS]
+                meta = GameMetadata._data.pop(old_key, {})
+                GameMetadata._data[GameMetadata._game_key(game)] = meta
+                moved += 1
+            except Exception as e:
+                errors.append(f"[{game.name}] {e}")
+
+        GameMetadata.save()
+        self._clear_selection()
+        self._refresh()
+        msg = f"成功移动 {moved} 个游戏"
+        if errors:
+            msg += f"\n\n失败:\n" + "\n".join(errors[:10])
+        if auto_backup:
+            msg += f"\n\n自动备份: {auto_backup}"
+        QMessageBox.information(self, "完成", msg)
+
+    def _batch_delete(self):
+        """批量删除选中游戏到回收目录"""
+        if not self.selected_games:
+            return
+
+        reply = QMessageBox.question(
+            self, "确认批量删除",
+            f"确定要将选中的 {len(self.selected_games)} 个游戏移入回收目录吗？\n"
+            "数据不会永久删除，可随时恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        auto_backup = self._batch_auto_backup()
+        deleted_dir = ROOT_PATH / ".deleted"
+        deleted_dir.mkdir(exist_ok=True)
+
+        errors = []
+        deleted = 0
+        for game in list(self.selected_games):
+            try:
+                src_path = Path(game.path)
+                if not src_path.exists():
+                    errors.append(f"[{game.name}] 源目录不存在")
+                    continue
+                # 处理重名
+                dst_path = deleted_dir / game.name
+                counter = 1
+                while dst_path.exists():
+                    dst_path = deleted_dir / f"{game.name}_{counter}"
+                    counter += 1
+                shutil.move(str(src_path), str(dst_path))
+                GameMetadata.remove(game)
+                deleted += 1
+            except Exception as e:
+                errors.append(f"[{game.name}] {e}")
+
+        self._clear_selection()
+        self._refresh()
+        msg = f"已移入回收目录 {deleted} 个游戏"
+        if errors:
+            msg += f"\n\n失败:\n" + "\n".join(errors[:10])
+        if auto_backup:
+            msg += f"\n\n自动备份: {auto_backup}"
+        QMessageBox.information(self, "完成", msg)
+
+    def _batch_import_cg(self):
+        """批量为选中游戏导入 CG 图片"""
+        if not self.selected_games:
+            return
+
+        folder = QFileDialog.getExistingDirectory(
+            self, "选择包含 CG 图片的文件夹", str(Path.home()),
+            options=FILE_DIALOG_OPTIONS
+        )
+        if not folder:
+            return
+
+        folder_path = Path(folder)
+        images = sorted([f for f in folder_path.iterdir() if f.suffix.lower() in SUPPORTED_EXTS])
+        if not images:
+            QMessageBox.warning(self, "提示", "所选文件夹中没有支持的图片文件")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认导入",
+            f"将为 {len(self.selected_games)} 个游戏导入 {len(images)} 张 CG 图片，\n"
+            "每个游戏按顺序分配一张图片。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        auto_backup = self._batch_auto_backup()
+        games = list(self.selected_games)
+        errors = []
+        imported = 0
+
+        for i, game in enumerate(games):
+            if i >= len(images):
+                break
+            try:
+                cg_dir = Path(game.path) / "cg"
+                cg_dir.mkdir(exist_ok=True)
+                src = images[i]
+                dst = cg_dir / src.name
+                # 处理重名
+                counter = 1
+                while dst.exists():
+                    stem = src.stem
+                    if "_" in stem:
+                        stem = stem.rsplit("_", 1)[0]
+                    dst = cg_dir / f"{stem}_{counter}{src.suffix}"
+                    counter += 1
+                shutil.copy2(str(src), str(dst))
+                imported += 1
+            except Exception as e:
+                errors.append(f"[{game.name}] {e}")
+
+        self._clear_selection()
+        self._refresh()
+        msg = f"成功为 {imported} 个游戏导入 CG"
+        if errors:
+            msg += f"\n\n失败:\n" + "\n".join(errors[:10])
+        if auto_backup:
+            msg += f"\n\n自动备份: {auto_backup}"
+        QMessageBox.information(self, "完成", msg)
+
     def _show_detail(self, game: GameInfo):
+        self._clear_selection()
         self.detail_page.set_game(game)
         self._current_game = game
         self._update_status_bar(game)
