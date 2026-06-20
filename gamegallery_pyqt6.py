@@ -19,6 +19,7 @@ from collections import defaultdict
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 # ============================================================================
 # 配置
@@ -4528,9 +4529,58 @@ class MainWindow(QMainWindow):
 
 
 # ============================================================================
+# 单实例守卫（防止重复启动）
+# ============================================================================
+class SingleInstanceGuard:
+    """通过 QLocalServer/QLocalSocket 实现单实例，已有实例则激活窗口"""
+
+    def __init__(self, app_id: str = "GameGallery.SingleInstance"):
+        self.app_id = app_id
+        self.server = None
+        self._window = None
+
+        # 尝试连接已有实例
+        socket = QLocalSocket()
+        socket.connectToServer(self.app_id)
+        if socket.waitForConnected(500):
+            socket.write(b"activate")
+            socket.flush()
+            socket.close()
+            self.is_running = True
+            return
+
+        self.is_running = False
+        # 创建监听服务器
+        self.server = QLocalServer()
+        self.server.removeServer(self.app_id)
+        self.server.listen(self.app_id)
+        self.server.newConnection.connect(self._on_new_connection)
+
+    def _on_new_connection(self):
+        socket = self.server.nextPendingConnection()
+        if socket:
+            socket.readyRead.connect(lambda: self._on_ready_read(socket))
+
+    def _on_ready_read(self, socket):
+        data = socket.readAll().data()
+        if data == b"activate" and self._window:
+            self._window.showNormal()
+            self._window.raise_()
+            self._window.activateWindow()
+
+    def set_window(self, window):
+        self._window = window
+
+
+# ============================================================================
 # 入口
 # ============================================================================
 if __name__ == '__main__':
+    guard = SingleInstanceGuard()
+    if guard.is_running:
+        print("已有实例正在运行，激活已有窗口...")
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
@@ -4538,5 +4588,6 @@ if __name__ == '__main__':
     app.setFont(font)
 
     window = MainWindow()
+    guard.set_window(window)
     window.show()
     sys.exit(app.exec())
