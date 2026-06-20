@@ -2137,33 +2137,46 @@ class GameRow(QWidget):
                 if local_pos.x() < card_geo.center().x():
                     insert_index = i
                     break
-            # 找到源卡片
-            source_card = None
-            for card in cards:
-                if GameMetadata._game_key(card.game) == source_key:
-                    source_card = card
-                    break
-            if source_card and source_card in cards:
+            # 判断源游戏是否属于当前行
+            source_in_current = any(GameMetadata._game_key(g) == source_key for g in self._games)
+            if source_in_current:
                 # 源卡片在当前行，执行行内排序
-                source_idx = cards.index(source_card)
-                if source_idx != insert_index and insert_index != source_idx + 1:
-                    self._reorder_games(source_idx, insert_index)
+                source_card = None
+                for card in cards:
+                    if GameMetadata._game_key(card.game) == source_key:
+                        source_card = card
+                        break
+                if source_card:
+                    source_idx = cards.index(source_card)
+                    if source_idx != insert_index and insert_index != source_idx + 1:
+                        self._reorder_games(source_idx, insert_index)
+                        event.acceptProposedAction()
+                        return
+            else:
+                # 源卡片不在当前行，跨行移动
+                # 从所有游戏中找到源游戏对象
+                source_game = None
+                for g in self._games:
+                    if GameMetadata._game_key(g) == source_key:
+                        source_game = g
+                        break
+                if not source_game:
+                    # 尝试从 GameMetadata 缓存查找
+                    for g in GameMetadata._data.values():
+                        if GameMetadata._game_key(g) == source_key:
+                            source_game = g
+                            break
+                if source_game:
+                    if " / " in self.title:
+                        parts = self.title.split(" / ")
+                        target_cat = parts[0]
+                        target_sub = parts[1]
+                    else:
+                        target_cat = source_game.category
+                        target_sub = source_game.sub
+                    self.game_moved_to_category.emit(source_game, target_cat, target_sub)
                     event.acceptProposedAction()
                     return
-            elif source_card:
-                # 源卡片不在当前行，跨行移动
-                # 解析当前行的分类
-                if " / " in self.title:
-                    parts = self.title.split(" / ")
-                    target_cat = parts[0]
-                    target_sub = parts[1]
-                else:
-                    # 最近游戏行，使用源游戏的分类
-                    target_cat = source_card.game.category
-                    target_sub = source_card.game.sub
-                self.game_moved_to_category.emit(source_card.game, target_cat, target_sub)
-                event.acceptProposedAction()
-                return
         event.ignore()
 
     def _reorder_games(self, source_idx: int, target_idx: int):
@@ -2179,9 +2192,14 @@ class GameRow(QWidget):
         self._games.insert(target_idx, game)
 
         # 重新分配 sort_weight（按当前顺序，步长 10.0）
+        GameMetadata._ensure_loaded()
         for i, g in enumerate(self._games):
             g.sort_weight = float(i * 10.0)
-            GameMetadata.set(g, sort_weight=g.sort_weight)
+            key = GameMetadata._game_key(g)
+            if key not in GameMetadata._data:
+                GameMetadata._data[key] = {}
+            GameMetadata._data[key]["sort_weight"] = g.sort_weight
+        GameMetadata.save()
 
         self.refresh_requested.emit()
 
@@ -2694,7 +2712,6 @@ class DetailPage(QWidget):
         GameMetadata.set(self.game, rating=rating)
         self._update_rating_stars()
         self.game_info_changed.emit(self.game)
-        self._apply_bg_scale()
 
     def _on_note_changed(self):
         """笔记内容变化时启动防抖保存"""
@@ -2713,12 +2730,11 @@ class DetailPage(QWidget):
         self.game_info_changed.emit(self.game)
         self.save_note_btn.setText("已保存")
         QTimer.singleShot(1500, lambda: self.save_note_btn.setText("保存笔记"))
-        self._apply_bg_scale()
 
     def _load_bg(self, path: str):
         """加载背景图片 - 自适应居中裁剪，不拉伸"""
         def _on_loaded(p: str, pixmap: QPixmap):
-            if self.game and (str(self.game.wallpaper) == p or str(self.game.cover) == p):
+            if self.game and ((self.game.wallpaper and str(self.game.wallpaper) == p) or (self.game.cover and str(self.game.cover) == p)):
                 if not pixmap.isNull():
                     self._bg_original_pixmap = pixmap.copy()
                     self._apply_bg_scale()
@@ -2727,7 +2743,7 @@ class DetailPage(QWidget):
 
     def _on_wp_loaded(self, path: str, pixmap: QPixmap):
         """兼容旧方法 - 自适应居中裁剪，不拉伸"""
-        if self.game and (str(self.game.wallpaper) == path or str(self.game.cover) == path):
+        if self.game and ((self.game.wallpaper and str(self.game.wallpaper) == path) or (self.game.cover and str(self.game.cover) == path)):
             if not pixmap.isNull():
                 self._bg_original_pixmap = pixmap.copy()
                 self._apply_bg_scale()
@@ -3836,6 +3852,7 @@ class MainWindow(QMainWindow):
             new_root = Path(chosen)
             ROOT_PATH = new_root
             GAMES_JSON = ROOT_PATH / "games.json"
+            GameMetadata._loaded = False
             ensure_root()
 
     def _import_backup(self):
@@ -4068,8 +4085,9 @@ class MainWindow(QMainWindow):
         for i in sorted(self._visible_row_indices - new_visible, reverse=True):
             if i < self.rows_layout.count() - 1:  # 排除最后的 stretch
                 item = self.rows_layout.takeAt(i)
-                if item.widget():
-                    item.widget().deleteLater()
+                w = item.widget() if item else None
+                if w and isinstance(w, GameRow):
+                    w.deleteLater()
                 self.rows_layout.insertWidget(i, self._placeholders[i])
             self._visible_row_indices.discard(i)
 
@@ -4078,8 +4096,9 @@ class MainWindow(QMainWindow):
             if i >= self.rows_layout.count() - 1:
                 continue
             item = self.rows_layout.takeAt(i)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget() if item else None
+            if w and isinstance(w, GameRow):
+                w.deleteLater()
             row = self._create_row(*self._row_data[i])
             self.rows_layout.insertWidget(i, row)
             self._visible_row_indices.add(i)
